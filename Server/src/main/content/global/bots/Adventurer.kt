@@ -8,6 +8,7 @@ import core.game.node.entity.skill.Skills
 import core.game.node.item.Item
 import core.game.system.task.Pulse
 import core.game.world.GameWorld
+import core.game.system.communication.CommunicationInfo
 import core.game.world.map.Location
 import core.game.world.map.RegionManager
 import core.game.world.map.zone.ZoneBorders
@@ -22,10 +23,15 @@ import core.game.bots.Script
 import core.game.interaction.IntType
 import core.game.interaction.InteractionListeners
 import core.tools.Log
+import core.game.node.entity.player.Player
 import java.io.File
+
+import core.game.world.update.flag.context.ChatMessage
 import java.io.FileReader
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import core.game.node.entity.player.link.emote.Emotes
+import content.data.Quests
 import kotlin.random.Random
 
 
@@ -45,7 +51,8 @@ import kotlin.random.Random
 // Super Grand Exchange Update
 class Adventurer(val style: CombatStyle): Script() {
 
-    var city: Location = lumbridge
+    //var city: Location = lumbridge
+    var city: Location = getRandomCity()
     var poiloc: Location = karamja
     var geSocialLoc: Location = getRandomGESocialLocation()
     var geClerkLoc: Location = getRandomGELocation()
@@ -55,6 +62,9 @@ class Adventurer(val style: CombatStyle): Script() {
     var sold: Boolean = false
     var poi: Boolean = false
 
+    // Each bot gets a random personality that influences their behavior
+    val personality: Trait = Trait.values().random()
+
     val chance: Int = if (cityLocationsGE.contains(city)) 3500 else 3000
     var ticks: Int = 0
     var counter: Int = 0
@@ -62,6 +72,9 @@ class Adventurer(val style: CombatStyle): Script() {
     var returnToAdventure: Int = 0
     var geWait: Int = 0
     var geLongWait: Int = 0
+    var walkingDestination: Location? = null
+    var deathLocation: Location? = null
+
 
     val type = when(style){
         CombatStyle.MELEE -> CombatBotAssembler.Type.MELEE
@@ -70,6 +83,9 @@ class Adventurer(val style: CombatStyle): Script() {
     }
 
     init {
+        // Complete Prince Ali Rescue so bots can walk through the Al Kharid gate freely
+        quests.add(Quests.PRINCE_ALI_RESCUE)
+
         skills[Skills.AGILITY] = 99
         inventory.add(Item(1359))//Rune Axe
         skills[Skills.WOODCUTTING] = 95
@@ -78,6 +94,9 @@ class Adventurer(val style: CombatStyle): Script() {
         inventory.add(Item(1271))//Addy Pickaxe
         skills[Skills.MINING] = 90
         skills[Skills.SLAYER] = 90
+        
+        // Add food
+        inventory.add(Item(385, 10)) // 10 Sharks
     }
 
     override fun toString(): String {
@@ -85,6 +104,7 @@ class Adventurer(val style: CombatStyle): Script() {
                 "at ${bot.location}! " +
                 "State: $state - " +
                 "City: $city - " +
+                "Personality: $personality - " +
                 "Ticks: $ticks - " +
                 "Freshspawn: $freshspawn - " +
                 "Sold: $sold - " +
@@ -118,6 +138,7 @@ class Adventurer(val style: CombatStyle): Script() {
         val otherPlayers = localPlayers.filter { it.name != bot.name }
         return otherPlayers.isNotEmpty()
     }
+
 
     private fun checkNearBank() {
         if(bankMap[city] == null){
@@ -157,7 +178,13 @@ class Adventurer(val style: CombatStyle): Script() {
     fun immerse() {
         if (counter++ >= Random.nextInt(150,300)) { state = State.TELEPORTING }
         val items = AIRepository.groundItems[bot]
-        if (Random.nextBoolean()) {
+        // FIGHTER bots prefer combat, SKILLER bots prefer gathering, others flip a coin
+        val preferCombat = when (personality) {
+            Trait.FIGHTER -> true
+            Trait.SKILLER -> false
+            else -> Random.nextBoolean()
+        }
+        if (preferCombat) {
             if (items.isNullOrEmpty()) {
                 scriptAPI.attackNpcsInRadius(bot, 8)
                 state = State.LOOT_DELAY
@@ -181,9 +208,48 @@ class Adventurer(val style: CombatStyle): Script() {
         return
     }
 
+    fun performIdleBehavior() {
+        val roll = randomNumberFromOne(100)
+        when {
+            // Perform an emote near other players
+            roll < 15 && otherPlayersNearby() -> {
+                val emotes = listOf(
+                    Emotes.WAVE, Emotes.THINK, Emotes.DANCE, Emotes.CHEER,
+                    Emotes.LAUGH, Emotes.BOW, Emotes.CLAP, Emotes.JUMP_FOR_JOY,
+                    Emotes.SHRUG, Emotes.YES
+                )
+                emotes.random().play(bot)
+            }
+            // Face and "examine" nearby scenery
+            roll < 40 -> {
+                val things = listOf(
+                    "Tree", "Oak", "Willow", "Rocks", "Bush",
+                    "Statue", "Fountain", "Well", "Sign", "Signpost",
+                    "Maple tree", "Yew", "Bench"
+                )
+                val scenery = scriptAPI.getNearestNodeFromList(things, true)
+                if (scenery != null) {
+                    bot.faceLocation(scenery.location)
+                }
+            }
+            // Watch nearby combat
+            roll < 60 -> {
+                val localNpcs = RegionManager.getLocalNpcs(bot)
+                val fightingNpc = localNpcs.firstOrNull { it.inCombat() }
+                if (fightingNpc != null) {
+                    bot.faceLocation(fightingNpc.location)
+                }
+            }
+            // Small random chat
+            roll < 70 && otherPlayersNearby() -> {
+                dialogue()
+            }
+        }
+    }
+
     fun refresh() {
-//        log(this::class.java, Log.WARN, "${bot.username} refreshed from $state at $city with $ticks and $counter counter.")
-        scriptAPI.teleport(lumbridge)
+        city = getRandomCity()
+        scriptAPI.teleport(city)
         state = State.START
     }
 
@@ -191,6 +257,26 @@ class Adventurer(val style: CombatStyle): Script() {
     // 100 ticks = 60 seconds
     override fun tick() {
         ticks++
+
+        if (bot.getAttribute("dead", false)) {
+            bot.removeAttribute("dead")
+            val locObj = bot.getAttribute("bot_death_location", null)
+            if (locObj != null && locObj is Location) {
+                deathLocation = locObj
+                state = State.RECOVER_DEATH
+            } else {
+                state = State.RECOVER_BANK
+            }
+        }
+
+        if (bot.inCombat()) {
+            scriptAPI.eat(385)
+        }
+
+
+
+
+
         // Hard refresh
         if (ticks >= 1000) {
             ticks = 0
@@ -207,6 +293,8 @@ class Adventurer(val style: CombatStyle): Script() {
                 }
             }
         }
+
+
 
         when(state){
 
@@ -237,7 +325,25 @@ class Adventurer(val style: CombatStyle): Script() {
             State.START -> {
                 if (freshspawn) {
                     freshspawn = false
-                    scriptAPI.randomWalkTo(lumbridge, randomNumberFromOne(25))
+
+                    // 1. Find the closest official city anchor to where ImmerseWorld dropped them
+                    var closestCity = lumbridge
+                    var closestDist = 99999.0
+
+                    for (c in cities) {
+                        // Calculates the physical distance between the bot and the city anchor
+                        val dist = Math.hypot((bot.location.x - c.x).toDouble(), (bot.location.y - c.y).toDouble())
+                        if (dist < closestDist) {
+                            closestDist = dist
+                            closestCity = c
+                        }
+                    }
+
+                    // 2. Set their memory to the official city so their banking and roaming works!
+                    city = closestCity
+
+                    // 3. Take a brief walk to wake the AI up
+                    scriptAPI.randomWalkTo(bot.location, randomNumberFromOne(15))
                 } else {
                     state = State.TELEPORTING
                 }
@@ -256,36 +362,87 @@ class Adventurer(val style: CombatStyle): Script() {
 
             State.ADVENTURE -> {
                 checkCounter(800)
-                if (randomNumberFromOne(chance) <= 10) {
+
+                // Dialogue chance — SOCIAL bots chat 3x more
+                val dialogueChance = if (personality == Trait.SOCIAL) 30 else 10
+                if (randomNumberFromOne(chance) <= dialogueChance) {
                     if (otherPlayersNearby()) {
                         ticks = 0
                         dialogue()
                     }
                 }
 
-                if (!poi && randomNumberFromOne(1000) <= 75) {
-                    val roamDistance = if (!cityLocationsGE.contains(city)) 225 else randomNumberFromOne(5)
+                // Varrock bots sometimes naturally walk to the GE (as a visit, not relocation)
+                if (!poi && city == varrock && randomNumberFromOne(1000) <= 15) {
+                    val geLoc = socialLocationsGE.random()
+                    scriptAPI.walkTo(geLoc)
+                    // Keep city = varrock so the bot drifts back to adventuring
+                    counter = 0
+                    ticks = 0
+                    return
+                }
+
+                // Occasional idle micro-behavior — SOCIAL bots do this more often
+                val idleChance = if (personality == Trait.SOCIAL) 60 else 30
+                if (randomNumberFromOne(1000) <= idleChance) {
+                    performIdleBehavior()
+                    return
+                }
+
+                // Roam chance — EXPLORER bots roam more often and farther
+                val roamChance = if (personality == Trait.EXPLORER) 250 else 150
+                if (!poi && randomNumberFromOne(1000) <= roamChance) {
+                    val explorerMult = if (personality == Trait.EXPLORER) 1.4 else 1.0
+                    val roamDistance = if (!cityLocationsGE.contains(city)) {
+                        val base = when (city) {
+                            lumbridge -> 120  // Reaches the cow fields, Al Kharid gate, and deep swamps
+                            varrock -> 130    // Reaches Barbarian Village, Champions Guild, and Earth Altar
+                            falador -> 110    // Reaches Port Sarim, Crafting Guild, and Taverley gate
+                            edgeville -> 60   // Pushes to the Monastery and Barbarian Village (avoids deep Wilderness)
+                            draynor -> 90     // Reaches the Wizards' Tower and Port Sarim
+                            alkharid -> 120   // Covers the scorpion mine, Shantay Pass, and glider area
+                            ardougne -> 120   // Reaches the Zoo, Khazard Battlefield, and Legends' Guild
+                            yanille -> 100    // Pushes out into the surrounding Ogre areas
+                            seers -> 110      // Reaches Camelot castle, McGrubor's Wood, and the Ranging Guild
+                            catherby -> 90    // Reaches White Wolf Mountain base and the farming patches
+                            rimmington -> 100 // Covers the Crafting Guild and the coast
+                            karamja -> 150    // Massive jungle area, gives them plenty of room to hunt
+                            else -> 100       // A healthy default
+                        }
+                        (base * explorerMult).toInt()
+                    } else {
+                        randomNumberFromOne(5) // GE bots barely move
+                    }
+
                     if (cityLocationsGE.contains(city) && randomNumberFromOne(100) < 90) {
                         if (!bot.bank.isEmpty) {
                             state = State.FIND_GE
                         }
                         return
                     }
+
                     scriptAPI.randomWalkTo(city, roamDistance)
                     return
                 }
 
-                if (poi && randomNumberFromOne(1000) <= 100){
+                // POI immerse chance — FIGHTER and SKILLER bots do this more
+                val immerseChance = when (personality) {
+                    Trait.FIGHTER, Trait.SKILLER -> 180
+                    else -> 100
+                }
+                if (poi && randomNumberFromOne(1000) <= immerseChance) {
                     immerse()
                     return
                 }
 
-                if (poi && randomNumberFromOne(1000) <= 25){
+                // 2.5% chance at POI: dialogue
+                if (poi && randomNumberFromOne(1000) <= 25) {
                     dialogue()
                 }
 
-                if (poi && randomNumberFromOne(1000) <= 50){
-                    val roamDistancePoi = when(poiloc){
+                // 5% chance at POI: roam around POI location
+                if (poi && randomNumberFromOne(1000) <= 50) {
+                    val roamDistancePoi = when(poiloc) {
                         gemrocks, chaosnpc, chaosnpc2 -> 1
                         magics, coalTrucks -> 7
                         miningguild, teakfarm, crawlinghands -> 5
@@ -295,10 +452,11 @@ class Adventurer(val style: CombatStyle): Script() {
                         treegnome -> 50
                         else -> 60
                     }
-                    scriptAPI.randomWalkTo(poiloc,roamDistancePoi)
+                    scriptAPI.randomWalkTo(poiloc, roamDistancePoi)
                     return
                 }
 
+                // 7.5% chance: non-GE immerse or GE dialogue
                 if (randomNumberFromOne(1000) <= 75) {
                     if (!cityLocationsGE.contains(city)) {
                         ticks = 0
@@ -310,11 +468,18 @@ class Adventurer(val style: CombatStyle): Script() {
                     }
                 }
 
-                if (cityLocationsGE.contains(city) && randomNumberFromOne(1000) <= 50) {
+                // GE idle chance — MERCHANT and SOCIAL bots hang around the GE more
+                val geIdleChance = when (personality) {
+                    Trait.MERCHANT, Trait.SOCIAL -> 120
+                    else -> 50
+                }
+                if (cityLocationsGE.contains(city) && randomNumberFromOne(1000) <= geIdleChance) {
                     state = State.IDLE_GE
                 }
 
-                if (!poi && randomNumberFromOne(1000) <= 5) {
+                // POI teleport chance — EXPLORER bots visit POIs more often
+                val poiChance = if (personality == Trait.EXPLORER) 15 else 5
+                if (!poi && randomNumberFromOne(1000) <= poiChance) {
                     poiloc = getRandomPoi()
                     city = teak1
                     poi = true
@@ -322,23 +487,50 @@ class Adventurer(val style: CombatStyle): Script() {
                     return
                 }
 
+                // 10% chance at GE: leave
                 if (cityLocationsGE.contains(city) && randomNumberFromOne(1000) <= 100) {
                     state = State.TELEPORTING
                     return
                 }
 
+                // GE bots do nothing if no action fired
                 if (cityLocationsGE.contains(city)) {
                     return
                 }
 
-                if (poi && randomNumberFromOne(1000) <= 20){
+                // 2% chance at POI: teleport out
+                if (poi && randomNumberFromOne(1000) <= 20) {
                     state = State.TELEPORTING
                     return
                 }
 
+                // After extended time, move to a new city — prefer walking routes over teleporting
                 if (counter++ >= 750 && randomNumberFromOne(100) <= 50) {
-//                    log(this::class.java, Log.FINE, "${bot.username} has moved on to a different city at $ticks ticks and $counter counter.")
-                    city = getRandomCity()
+                    // Try to pick a connected city 80% of the time, unless explorer
+                    val connectedCities = routeDefinitions
+                        .filter { it.first == city || it.second == city }
+                        .map { if (it.first == city) it.second else it.first }
+
+                    val newCity = if (connectedCities.isNotEmpty() && personality != Trait.EXPLORER && randomNumberFromOne(100) < 80) {
+                        connectedCities.random()
+                    } else {
+                        getRandomCity()
+                    }
+
+                    // Try to find a walking route instead of teleporting
+                    if (!cityLocationsGE.contains(newCity)) {
+                        val route = findRoute(city, newCity)
+                        if (route != null) {
+                            walkingDestination = newCity
+                            counter = 0
+                            ticks = 0
+                            scriptAPI.walkArray(route)
+                            state = State.WALKING_PATH
+                            return
+                        }
+                    }
+                    // No route found or GE destination — fall back to existing behavior
+                    city = newCity
                     if (randomNumberFromOne(100) % 2 == 0) {
                         state = State.TELEPORTING
                     } else {
@@ -468,6 +660,110 @@ class Adventurer(val style: CombatStyle): Script() {
                 return
             }
 
+            State.WALKING_PATH -> {
+                // Bot is walking a defined route between cities via walkArray
+                if (walkingDestination != null && bot.location.withinDistance(walkingDestination!!, 10)) {
+                    // Arrived at destination
+                    city = walkingDestination!!
+                    walkingDestination = null
+                    counter = 0
+                    ticks = 0
+                    state = State.ADVENTURE
+                    return
+                }
+                // Safety timeout — if walking takes too long, bail out
+                if (counter++ >= 500) {
+                    walkingDestination = null
+                    state = State.TELEPORTING
+                }
+                return
+            }
+
+            State.RECOVER_DEATH -> {
+                if (deathLocation == null) {
+                    state = State.RECOVER_BANK
+                    return
+                }
+                if (counter++ >= 500) { // Safety timeout to find gear
+                    deathLocation = null
+                    counter = 0
+                    state = State.RECOVER_BANK
+                    return
+                }
+                
+                if (bot.location.withinDistance(deathLocation!!, 8)) {
+                    // We are at the death spot, look for our items on the ground
+                    val groundItems = AIRepository.groundItems[bot]
+                    var foundItems = false
+                    
+                    if (groundItems != null && groundItems.isNotEmpty()) {
+                        // Keep looting until all of our items are picked up
+                        for (groundItem in groundItems.toTypedArray()) {
+                            if (!bot.inventory.isFull) {
+                                scriptAPI.takeNearestGroundItem(groundItem.id)
+                                foundItems = true
+                            }
+                        }
+                    }
+                    
+                    if (!foundItems) {
+                        // Assuming we've picked everything up, re-equip from inventory
+                        bot.inventory.toArray().forEach { item ->
+                            if (item != null) {
+                                InteractionListeners.run(item.id, IntType.ITEM, "wield", bot, item)
+                                InteractionListeners.run(item.id, IntType.ITEM, "wear", bot, item)
+                            }
+                        }
+                        
+                        // Check if we managed to get a weapon back. If not, it means someone else took it or it despawned
+                        if (bot.equipment.getNew(3) == null) {
+                            state = State.RECOVER_BANK
+                        } else {
+                            // We got our gear back!
+                            deathLocation = null
+                            counter = 0
+                            ticks = 0
+                            state = State.START
+                        }
+                    }
+                } else {
+                    scriptAPI.randomWalkTo(deathLocation!!, 0)
+                }
+                return
+            }
+            
+            State.RECOVER_BANK -> {
+                val bank: Scenery? = scriptAPI.getNearestNode("Bank booth", true) as Scenery?
+                if (bank == null) {
+                    // Can't find a bank nearby, walk towards nearest city to look for one
+                    scriptAPI.randomWalkTo(getRandomCity(), 10)
+                } else {
+                    if (bot.location.withinDistance(bank.location, 5)) {
+                        // We reached the bank! Secretly re-gear
+                        val assembler = CombatBotAssembler()
+                        bot = assembler.produce(type, CombatBotAssembler.Tier.MED, bot.startLocation)!! // Give fresh MED gear
+                        bot.inventory.add(Item(385, 10)) // Fresh sharks
+                        
+                        counter = 0
+                        ticks = 0
+                        state = State.START
+                    } else {
+                        scriptAPI.randomWalkTo(bank.location, 1)
+                    }
+                }
+                
+                if (counter++ >= 500) {
+                    // Failsafe — if we can't path to a bank, just cheat gear in and teleport
+                    val assembler = CombatBotAssembler()
+                    bot = assembler.produce(type, CombatBotAssembler.Tier.MED, bot.startLocation)!!
+                    bot.inventory.add(Item(385, 10))
+                    
+                    counter = 0
+                    state = State.TELEPORTING
+                }
+                return
+            }
+
         }
 
     }
@@ -523,6 +819,7 @@ class Adventurer(val style: CombatStyle): Script() {
     enum class State{
         START,
         ADVENTURE,
+        WALKING_PATH,
         FIND_BANK,
         FIND_CITY,
         IDLE_GE,
@@ -530,7 +827,18 @@ class Adventurer(val style: CombatStyle): Script() {
         TELEPORTING,
         LOOT,
         LOOT_DELAY,
-        FIND_GE
+        FIND_GE,
+        RECOVER_DEATH,
+        RECOVER_BANK
+    }
+
+    // Personality traits that influence bot behavior
+    enum class Trait {
+        SOCIAL,    // Chats more, emotes more, hangs out at the GE
+        EXPLORER,  // Roams farther, visits more POIs, prefers walking routes
+        FIGHTER,   // Seeks combat more aggressively
+        SKILLER,   // Spends more time mining/woodcutting
+        MERCHANT   // Visits the GE more frequently
     }
 
 
@@ -558,7 +866,7 @@ class Adventurer(val style: CombatStyle): Script() {
         val rimmington: Location = Location.create(2977, 3239, 0)
         val lumbridge: Location = Location.create(3222, 3219, 0)
         val karamja: Location = Location.create(2849, 3033, 0)
-        val alkharid: Location = Location.create(3297, 3219, 0)
+        val alkharid: Location = Location.create(3293, 3183, 0)
 
         // Start POI
         val feldiphills: Location = Location.create(2535, 2919, 0)
@@ -589,19 +897,19 @@ class Adventurer(val style: CombatStyle): Script() {
         val badedge3: Location = Location.create(3094, 3490, 0)
         val badedge4: Location = Location.create(3094, 3494, 0)
 
-        var citygroupA = listOf(falador, varrock, draynor, rimmington, lumbridge, edgeville)
+        var citygroupA = listOf(falador, varrock, draynor, rimmington, lumbridge, edgeville, alkharid)
         var citygroupB = listOf(yanille, ardougne, seers, catherby)
 
         val cities = listOf(
             swGEClerk, neGEClerk, nwGEBanker, seGEBanker,
             yanille, ardougne, seers, catherby,
             falador, varrock, draynor, rimmington,
-            lumbridge, edgeville
+            lumbridge, edgeville, alkharid
         )
 
         val pois = listOf(
-            karamja, karamja, alkharid,
-            alkharid, feldiphills, feldiphills,
+            karamja, karamja,
+            feldiphills, feldiphills,
             isafdar, eaglespeek, eaglespeek,
             canafis, treegnome, treegnome,
             teak1, teakfarm, keldagrimout,
@@ -644,6 +952,70 @@ class Adventurer(val style: CombatStyle): Script() {
             seers to ZoneBorders(2729, 3493, 2722, 3490),
             catherby to ZoneBorders(2807, 3438, 2811, 3441)
         )
+
+        // Walking routes between cities: Triple(from, to, intermediate waypoints)
+        // findRoute() builds the final path by appending the destination and supports reverse lookups
+        val routeDefinitions = listOf(
+            // Varrock -> Lumbridge (south along the main road)
+            Triple(varrock, lumbridge, arrayOf(
+                Location(3218, 3390, 0), Location(3225, 3340, 0),
+                Location(3235, 3290, 0), Location(3228, 3250, 0)
+            )),
+            // Varrock -> Edgeville (west through Barbarian Village)
+            Triple(varrock, edgeville, arrayOf(
+                Location(3175, 3430, 0), Location(3110, 3420, 0),
+                Location(3094, 3468, 0)
+            )),
+            // Edgeville -> Falador (south through Barbarian Village)
+            Triple(edgeville, falador, arrayOf(
+                Location(3082, 3425, 0), Location(3030, 3395, 0),
+                Location(2990, 3385, 0)
+            )),
+            // Falador -> Draynor (southeast)
+            Triple(falador, draynor, arrayOf(
+                Location(2990, 3355, 0), Location(3020, 3310, 0),
+                Location(3060, 3270, 0)
+            )),
+            // Falador -> Rimmington (south)
+            Triple(falador, rimmington, arrayOf(
+                Location(2970, 3340, 0), Location(2975, 3290, 0),
+                Location(2976, 3250, 0)
+            )),
+            // Lumbridge -> Draynor (west)
+            Triple(lumbridge, draynor, arrayOf(
+                Location(3180, 3230, 0), Location(3130, 3245, 0)
+            )),
+            // Lumbridge -> Al Kharid (east through gate area)
+            Triple(lumbridge, alkharid, arrayOf(
+                Location(3260, 3225, 0)
+            )),
+            // Seers -> Catherby (east)
+            Triple(seers, catherby, arrayOf(
+                Location(2760, 3470, 0), Location(2790, 3445, 0)
+            )),
+            // Ardougne -> Seers (north)
+            Triple(ardougne, seers, arrayOf(
+                Location(2680, 3350, 0), Location(2700, 3400, 0),
+                Location(2715, 3450, 0)
+            )),
+            // Ardougne -> Yanille (south)
+            Triple(ardougne, yanille, arrayOf(
+                Location(2650, 3270, 0), Location(2635, 3200, 0),
+                Location(2620, 3150, 0)
+            ))
+        )
+
+        fun findRoute(from: Location, to: Location): Array<Location>? {
+            for ((routeFrom, routeTo, midpoints) in routeDefinitions) {
+                if (from == routeFrom && to == routeTo) {
+                    return (midpoints.toList() + to).toTypedArray()
+                }
+                if (from == routeTo && to == routeFrom) {
+                    return (midpoints.reversed() + to).toTypedArray()
+                }
+            }
+            return null
+        }
 
         private val whiteWolfMountainTop = Location(2850, 3496, 0)
         private val catherbyToTopOfWhiteWolf = arrayOf(Location(2856, 3442, 0), Location(2848, 3455, 0), Location(2848, 3471, 0), Location(2848, 3487, 0))
@@ -694,6 +1066,22 @@ class Adventurer(val style: CombatStyle): Script() {
             ZoneBorders(3140, 3468, 3140, 3468) to { it: Adventurer ->
                 // Walk to Barbarian village
                 it.scriptAPI.walkArray(arrayOf(Location.create(3135, 3516, 0), Location.create(3103, 3489, 0), Location.create(3082, 3423, 0)))
+            },
+            // Al Kharid Gate (Lumbridge side and Al Kharid side)
+            ZoneBorders(3266, 3226, 3269, 3230) to { it: Adventurer ->
+                // Interact with the Border Guard (NPC ID 925) or the Gate
+                val guard = it.scriptAPI.getNearestNode("Border Guard", false)
+                if (guard != null) {
+                    it.scriptAPI.interact(it.bot, guard, "Talk-To")
+                } else {
+                    val gate = it.scriptAPI.getNearestNode("Gate", true)
+                    if (gate != null) {
+                        it.scriptAPI.interact(it.bot, gate, "Open")
+                    } else {
+                        it.refresh()
+                        it.ticks = 0
+                    }
+                }
             },
         )
 

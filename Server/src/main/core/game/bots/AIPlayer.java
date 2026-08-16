@@ -94,14 +94,28 @@ public class AIPlayer extends Player {
 
     @SuppressWarnings("deprecation")
     private AIPlayer(String name, Location l, String ignored) {
-        super(new PlayerDetails("/aip" + (currentUID + 1) + ":" + name));
+        super(new PlayerDetails("/aip" + (currentUID + 1) + ":" + (name == null ? "Bot" : name)));
         super.setLocation(startLocation = l);
         super.artificial = true;
         super.getDetails().setSession(ArtificialSession.getSingleton());
         Repository.getPlayers().add(this);
-        this.username = StringUtils.formatDisplayName(name + (currentUID + 1));
+        this.username = (name == null ? "Bot" : name) + (currentUID + 1);
         this.uid = currentUID++;
-        this.updateRandomValues();
+        try {
+            if (OSRScopyLine != null && name != null && OSRScopyLine.split(":")[0].equals(name)) {
+                setLevels();
+                giveArmor();
+            } else {
+                for (int i = 0; i < Skills.NUM_SKILLS; i++) {
+                    this.getSkills().setStaticLevel(i, i == Skills.HITPOINTS ? 10 : 1);
+                }
+            }
+            this.updateRandomValues();
+        } catch (Exception e) {
+            e.printStackTrace();
+            Repository.getPlayers().remove(this);
+            return;
+        }
         this.init();
     }
 
@@ -110,7 +124,6 @@ public class AIPlayer extends Player {
      */
     public void updateRandomValues() {
         this.getAppearance().setGender(RandomFunction.random(5) == 1 ? Gender.FEMALE : Gender.MALE);
-        int setTo = RandomFunction.random(0,10);
         CharacterDesign.randomize(this,true);
         this.setDirection(Direction.values()[new Random().nextInt(Direction.values().length)]); //Random facing dir
         this.getSkills().updateCombatLevel();
@@ -184,15 +197,24 @@ public class AIPlayer extends Player {
         try {
             Scanner sc = new Scanner(new File(ServerConstants.BOT_DATA_PATH + fileName));
             while (sc.hasNextLine()) {
-                botNames.add(sc.nextLine());
+                String line = sc.nextLine().trim();
+                if(!line.isEmpty())
+                    botNames.add(line);
             }
+            sc.close();
         } catch (Exception e){
             e.printStackTrace();
         }
     }
 
     public static String getRandomName(){
-        int index = (RandomFunction.random(botNames.size()));
+        if (botNames.isEmpty()) {
+            loadNames("botnames.txt");
+        }
+        if (botNames.isEmpty()) {
+            return "Bot";
+        }
+        int index = RandomFunction.random(botNames.size() - 1);
         String name = botNames.get(index);
         botNames.remove(index);
         return name;
@@ -204,8 +226,8 @@ public class AIPlayer extends Player {
     public static void updateRandomOSRScopyLine(String fileName) {
         Random rand = new Random();
         int n = 0;
-        try {
-            for (Scanner sc = new Scanner(new File(ServerConstants.BOT_DATA_PATH + fileName)); sc.hasNext(); ) {
+        try (Scanner sc = new Scanner(new File(ServerConstants.BOT_DATA_PATH + fileName))) {
+            while (sc.hasNext()) {
                 ++n;
                 String line = sc.nextLine();
                 if (rand.nextInt(n) == 0) { //Chance of overwriting line is lower and lower
@@ -217,15 +239,21 @@ public class AIPlayer extends Player {
                 }
             }
         } catch (FileNotFoundException e) {
-
             e.printStackTrace();
         }
     }
 
     private static String retrieveRandomName(String fileName) {
+        int attempts = 0;
+        OSRScopyLine = null;
         do {
             updateRandomOSRScopyLine(fileName);
-        } while (OSRScopyLine.startsWith("#") || OSRScopyLine.contains("_") || OSRScopyLine.contains(" ")); //Comment
+            attempts++;
+        } while ((OSRScopyLine == null || OSRScopyLine.startsWith("#") || OSRScopyLine.contains("_") || OSRScopyLine.contains(" ")) && attempts < 100);
+
+        if (OSRScopyLine == null || !OSRScopyLine.contains(":")) {
+            return getRandomName();
+        }
         return OSRScopyLine.split(":")[0];
     }
 
@@ -503,7 +531,12 @@ public class AIPlayer extends Player {
 
     @Override
     public void finalizeDeath(Entity killer) {
+        setAttribute("bot_death_location", getLocation());
         super.finalizeDeath(killer);
+        getPulseManager().clear();
+        getProperties().getCombatPulse().stop();
+        getWalkingQueue().reset();
+        teleport(getStartLocation());
         fullRestore();
     }
 
