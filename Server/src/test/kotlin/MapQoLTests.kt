@@ -42,14 +42,14 @@ class MapQoLTests {
     fun lumbridgeSwampFenceGateIsPlaced() {
         MapQoLEditsPlugin().startup()
 
-        Assertions.assertEquals(15510, RegionManager.getObject(0, 3216, 3203)?.getId(), "west gate leaf missing")
-        Assertions.assertEquals(15512, RegionManager.getObject(0, 3217, 3203)?.getId(), "east gate leaf missing")
+        Assertions.assertEquals(15510, RegionManager.getObject(0, 3173, 3207)?.getId(), "west gate leaf missing")
+        Assertions.assertEquals(15512, RegionManager.getObject(0, 3174, 3207)?.getId(), "east gate leaf missing")
         // the closed gate keeps a type-0/rot-3 wall bit on its tile and blocks the
-        // crossing from the courtyard side; the door handler clears these on open
-        Assertions.assertEquals(0x20, RegionManager.getClippingFlag(0, 3217, 3203), "gate clipping not applied at (3217,3203)")
-        Assertions.assertNotEquals(0, RegionManager.getClippingFlag(0, 3217, 3202) and 0x2, "gate does not block crossing while closed")
+        // crossing from the swamp side; the door handler clears these on open
+        Assertions.assertEquals(0x20, RegionManager.getClippingFlag(0, 3173, 3207), "gate clipping not applied at (3173,3207)")
+        Assertions.assertNotEquals(0, RegionManager.getClippingFlag(0, 3173, 3206) and 0x2, "gate does not block crossing while closed")
         // neighbouring untouched fence segment keeps its original clipping
-        Assertions.assertEquals(0x20, RegionManager.getClippingFlag(0, 3218, 3203) and 0xFF, "fence at (3218,3203) altered")
+        Assertions.assertEquals(0x4020, RegionManager.getClippingFlag(0, 3175, 3207), "fence at (3175,3207) altered")
     }
 
     @Test

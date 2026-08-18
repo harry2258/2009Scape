@@ -63,14 +63,15 @@ public class MapQoLEditsPlugin implements StartupListener {
     }
 
     /**
-     * Replaces two segments of the courtyard's south fence (y=3203, x=3216-3217)
-     * with a wooden double gate on the natural running line to the swamp.
+     * Replaces two segments of the farm/swamp boundary fence (33916, y=3207,
+     * x=3173-3174 - directly south of the castle's west grounds) with a wooden
+     * double gate on the running line down to the swamp.
      */
     private void openLumbridgeSwampFenceGate() {
-        removeDecorativeWall(33583, Location.create(3216, 3203, 0), 0, 3);
-        removeDecorativeWall(33583, Location.create(3217, 3203, 0), 0, 3);
-        SceneryBuilder.add(new Scenery(15510, Location.create(3216, 3203, 0), 0, 3));
-        SceneryBuilder.add(new Scenery(15512, Location.create(3217, 3203, 0), 0, 3));
+        removeDecorativeWall(33916, Location.create(3173, 3207, 0), 0, 3);
+        removeDecorativeWall(33916, Location.create(3174, 3207, 0), 0, 3);
+        SceneryBuilder.add(new Scenery(15510, Location.create(3173, 3207, 0), 0, 3));
+        SceneryBuilder.add(new Scenery(15512, Location.create(3174, 3207, 0), 0, 3));
     }
 
     /**

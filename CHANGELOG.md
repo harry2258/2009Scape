@@ -28,10 +28,12 @@ past decisions and constraints are respected.
     trigger `Region.load`, and writing into the cold `-1` clipping cache gets
     clobbered when the region parses later. The plugin calls
     `Region.load` first (verified by test — this was a real bug caught by it).
-- **Gate in the Lumbridge Castle south fence (courtyard → swamp)**
-  (MapQoLEditsPlugin.java) — replaces fence segments 33583 at (3216-3217,
-  3203) with the 15510/15512 double gate, on the natural running line from
-  the courtyard down to the swamp/Water Altar path. Same mechanism as above.
+- **Gate in the Lumbridge farm/swamp boundary fence (castle grounds → swamp)**
+  (MapQoLEditsPlugin.java) — replaces fence segments 33916 at (3173-3174,
+  3207 - directly south of the castle's west grounds, pinned in-world at
+  Harry2258's position during playtest) with the 15510/15512 double gate.
+  An earlier placement in the courtyard's south fence at (3216-3217, 3203)
+  was reverted after playtesting. Same mechanism as above.
 - **Lumbridge Castle ground-floor staircases now lead down to the cellar**
   (MapQoLEditsPlugin.java + LumbridgeNodePlugin.java) — OSRS QoL parity: the
   two west-tower staircases are swapped to their two-way variants from the
