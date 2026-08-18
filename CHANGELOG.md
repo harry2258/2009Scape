@@ -51,6 +51,11 @@ past decisions and constraints are respected.
   the gates (incl. 2882, which previously had no open handler) now also
   passes seamlessly with the quest done instead of forcing the guard
   dialogue; everyone else keeps the existing toll flow.
+  - Follow-up after live observation (bots piled up on both sides of the
+    closed gate): artificial players cannot complete quests or click
+    pay-toll, so they are now waved through unconditionally — bot traffic
+    otherwise stacks against the leaves forever. Real players without the
+    quest still pay. Triggers are logged at FINE for diagnosis.
 
 ### Verified
 - `MapQoLTests` (new): gate leaves placed at both gates, north fence/terrain
