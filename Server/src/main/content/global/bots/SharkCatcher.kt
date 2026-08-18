@@ -95,7 +95,7 @@ class SharkCatcher : Script() {
                         return
                     } else if (myCounter++ == 300){
                         myCounter = 0
-                        State.TELE_FISH
+                        state = State.TELE_FISH
                     }
                 return
 

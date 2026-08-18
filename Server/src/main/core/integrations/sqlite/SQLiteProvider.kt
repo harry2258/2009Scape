@@ -59,32 +59,37 @@ class SQLiteProvider (private val path: String, private val expectedTables: Hash
     }
 
     fun run (closure: (conn: Connection) -> Unit) {
-        dbRunLock.tryLock(10000L, TimeUnit.MILLISECONDS)
+        dbRunLock.lock()
+        try {
+            connectionRefs++
+            val con = connect()
+            closure.invoke(con)
+            connectionRefs--
 
-        connectionRefs++
-        val con = connect()
-        closure.invoke(con)
-        connectionRefs--
-
-        if(connectionRefs == 0) {
-            con.close()
+            if(connectionRefs == 0) {
+                con.close()
+            }
+        } finally {
+            dbRunLock.unlock()
         }
-
-        dbRunLock.unlock()
     }
 
     private fun connect(): Connection
     {
-        obtainConnectionLock.tryLock(10000L, TimeUnit.MILLISECONDS)
-
-        if (connection == null || connection!!.isClosed)
-        {
-            val ds = SQLiteDataSource()
-            ds.url = "jdbc:sqlite:$sqlitePath"
-            connection = ds.connection
+        obtainConnectionLock.lock()
+        try {
+            if (connection == null || connection!!.isClosed)
+            {
+                val ds = SQLiteDataSource()
+                // WAL mode allows concurrent readers while a writer holds a transaction,
+                // preventing the game tick thread from blocking on GE price-sync batch writes.
+                ds.url = "jdbc:sqlite:$sqlitePath?journal_mode=WAL"
+                connection = ds.connection
+                connection!!.createStatement().use { it.execute("PRAGMA journal_mode=WAL;") }
+            }
+        } finally {
+            obtainConnectionLock.unlock()
         }
-
-        obtainConnectionLock.unlock()
         return connection!!
     }
 

@@ -2,6 +2,7 @@ package core.game.bots
 
 import core.game.node.item.Item
 import core.game.world.map.Location
+import core.tools.Log
 
 class SkillingBotAssembler {
     fun produce(type: Wealth, loc: Location): AIPlayer {

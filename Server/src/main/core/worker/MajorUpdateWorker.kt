@@ -35,8 +35,9 @@ class MajorUpdateWorker {
         started = true
         Thread.sleep(600L)
         while (running) {
+            val cycleStart = System.currentTimeMillis()
             Grafana.startTick()
-            val start = System.currentTimeMillis()
+            val start = cycleStart
             Server.heartbeat()
 
             if (Server.networkReachability == NetworkReachability.Reachable)
@@ -89,11 +90,14 @@ class MajorUpdateWorker {
             }
 
             val end = System.currentTimeMillis()
-            Grafana.totalTickTime = (end - start).toInt()
+            val tickDurationMs = (end - start).toInt()
+            Grafana.totalTickTime = tickDurationMs
             Grafana.endTick()
 /*            ServerMonitor.eventQueue.add(GuiEvent.UpdateTickTime(end - start))
             ServerMonitor.eventQueue.add(GuiEvent.UpdatePulseCount(GameWorld.Pulser.TASKS.size))*/
-            Thread.sleep(max(600 - (end - start), 0))
+            val sleepMs = max(600 - (end - start), 0)
+            Thread.sleep(sleepMs)
+            GameWorld.lastCycleDurationMs = (System.currentTimeMillis() - cycleStart).toInt()
         }
 
         log(this::class.java, Log.FINE,  "Update worker stopped.")

@@ -21,6 +21,16 @@ import java.util.LinkedList;
 import java.util.Map;
 import java.util.Queue;
 
+import static core.game.system.command.sets.StatAttributeKeysKt.STATS_BASE;
+import static core.game.system.command.sets.StatAttributeKeysKt.STATS_DAMAGE_DEALT_MAGIC;
+import static core.game.system.command.sets.StatAttributeKeysKt.STATS_DAMAGE_DEALT_MELEE;
+import static core.game.system.command.sets.StatAttributeKeysKt.STATS_DAMAGE_DEALT_RANGE;
+import static core.game.system.command.sets.StatAttributeKeysKt.STATS_DAMAGE_DEALT_TOTAL;
+import static core.game.system.command.sets.StatAttributeKeysKt.STATS_HIGHEST_HIT_MAGIC;
+import static core.game.system.command.sets.StatAttributeKeysKt.STATS_HIGHEST_HIT_MELEE;
+import static core.game.system.command.sets.StatAttributeKeysKt.STATS_HIGHEST_HIT_RANGE;
+import static core.game.system.command.sets.StatAttributeKeysKt.STATS_HIGHEST_HIT_TOTAL;
+
 /**
  * Class used for handling combat impacts.
  * @author Emperor
@@ -51,6 +61,7 @@ public final class ImpactHandler {
 	 * Gets the current hitsplats to show.
 	 */
 	private final Queue<Impact> impactQueue = new LinkedList<Impact>();
+	private static final String STATS_KEY_PREFIX = "/save:" + STATS_BASE + ":";
 
 	/**
 	 * Constructs a new {@code ImpactHandler} {@code Object}.
@@ -179,6 +190,9 @@ public final class ImpactHandler {
 				Integer value = npcImpactLog.get(source);
 				npcImpactLog.put(source, value == null ? hit : hit + value);
 			}
+			if (source instanceof Player && style != null && type == HitsplatType.NORMAL) {
+				trackPlayerDamageDealt(source.asPlayer(), style, hit);
+			}
 		}
 		if (style != null && style.getSwingHandler() != null && source instanceof Player) {
 			Player player = source.asPlayer();
@@ -219,6 +233,48 @@ public final class ImpactHandler {
 			}
 		}
 		return impact;
+	}
+
+	private static void trackPlayerDamageDealt(Player player, CombatStyle style, int hit) {
+		addLongStat(player, STATS_DAMAGE_DEALT_TOTAL, hit);
+		updateHighest(player, STATS_HIGHEST_HIT_TOTAL, hit);
+
+		switch (style) {
+			case MELEE:
+				addLongStat(player, STATS_DAMAGE_DEALT_MELEE, hit);
+				updateHighest(player, STATS_HIGHEST_HIT_MELEE, hit);
+				break;
+			case RANGE:
+				addLongStat(player, STATS_DAMAGE_DEALT_RANGE, hit);
+				updateHighest(player, STATS_HIGHEST_HIT_RANGE, hit);
+				break;
+			case MAGIC:
+				addLongStat(player, STATS_DAMAGE_DEALT_MAGIC, hit);
+				updateHighest(player, STATS_HIGHEST_HIT_MAGIC, hit);
+				break;
+			default:
+				break;
+		}
+	}
+
+	private static void addLongStat(Player player, String statKey, int amount) {
+		long current = getLongStat(player, statKey);
+		player.setAttribute(STATS_KEY_PREFIX + statKey, current + amount);
+	}
+
+	private static void updateHighest(Player player, String statKey, int hit) {
+		long current = getLongStat(player, statKey);
+		if (hit > current) {
+			player.setAttribute(STATS_KEY_PREFIX + statKey, (long) hit);
+		}
+	}
+
+	private static long getLongStat(Player player, String statKey) {
+		Object raw = player.getAttribute(STATS_KEY_PREFIX + statKey);
+		if (raw instanceof Number) {
+			return ((Number) raw).longValue();
+		}
+		return 0L;
 	}
 
 	/**

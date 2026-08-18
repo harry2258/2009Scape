@@ -9,6 +9,7 @@ import core.game.bots.Script
 import core.game.system.command.Privilege
 import core.game.world.GameWorld
 import core.tools.colorize
+import java.util.Locale
 
 @Initializable
 class BottingCommandSet : CommandSet(Privilege.STANDARD) {
@@ -62,7 +63,14 @@ class BottingCommandSet : CommandSet(Privilege.STANDARD) {
                 reject(player,"Invalid script identifier")
             }
             player.interfaceManager.close()
+            player.interfaceManager.closeChatbox()
+            player.dialogueInterpreter.close()
+            player.scripts.reset()
+            player.pulseManager.clear()
             GeneralBotCreator(script!!.clazz.newInstance() as Script,player,true)
+
+            player.unlock()
+            
             player.sendMessage(colorize("%RStarting script..."))
             player.sendMessage(colorize("%RTo stop the script, do ::stopscript or log out."))
 
@@ -71,6 +79,13 @@ class BottingCommandSet : CommandSet(Privilege.STANDARD) {
             val pulse: GeneralBotCreator.BotScriptPulse? = player.getAttribute("botting:script",null)
             pulse?.stop()
             player.interfaceManager.closeOverlay()
+            player.sendMessage(colorize("Script stopped!"))
+        }
+        define("botcap"){ player, _ ->
+            val cap = GeneralBotCreator.getCurrentBotScriptCap()
+            val smoothedCycle = String.format(Locale.US, "%.1f", GeneralBotCreator.getSmoothedCycleTimeMs())
+            val lastCycle = GameWorld.lastCycleDurationMs
+            player.sendMessage(colorize("%YBot tick cap: $cap | Smoothed cycle: ${smoothedCycle}ms | Last cycle: ${lastCycle}ms"))
         }
     }
 }

@@ -332,6 +332,9 @@ object PacketProcessor {
         //TODO See above TODO, I hate Arios. This was hardcoded in the packet decoder.
         if (pkt is Packet.SlotSwitchMultiComponent) {
             if (pkt.destIface == 762) {
+                // During a bank search the client shows a filtered, read-only view; ignore
+                // any drag-reorder so it can't corrupt the real bank with filtered indices.
+                if (getAttribute(pkt.player, "bank:searching", false)) return
                 if (pkt.destChild == 73) {
                     val container = pkt.player.bank
                     switchItem(pkt.sourceSlot, pkt.destSlot, container, pkt.player.bank.isInsertItems, pkt.player)
@@ -363,6 +366,7 @@ object PacketProcessor {
             }
         }
         else if (pkt is Packet.SlotSwitchSingleComponent) {
+            if (pkt.iface == 762 && getAttribute(pkt.player, "bank:searching", false)) return
             val container = if (pkt.iface == 762) pkt.player.bank else pkt.player.inventory
             switchItem(pkt.sourceSlot, pkt.destSlot, container, pkt.isInsert, pkt.player)
         }

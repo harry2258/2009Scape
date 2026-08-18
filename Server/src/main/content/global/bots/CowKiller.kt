@@ -14,6 +14,23 @@ class CowKiller : Script() {
     var spawnZone = ZoneBorders(3254,3255,3264,3281)
     var cowZone = ZoneBorders(3242, 3254,3265, 3296)
     val bankZone = ZoneBorders(3208, 3217,3210, 3220)
+    // Anti-stick: track whether the bot is making progress between ticks across the multi-story
+    // stair transitions (which previously used exact-tile equality and stranded the bot).
+    var lastLoc: Location? = null
+    var stalledTicks = 0
+
+    private fun recordStall(): Boolean {
+        val cur = bot.location
+        val last = lastLoc
+        lastLoc = cur
+        if (last != null && last == cur && !bot.pulseManager.hasPulseRunning() && !bot.walkingQueue.isMoving) {
+            stalledTicks++
+            return stalledTicks >= 6
+        }
+        stalledTicks = 0
+        return false
+    }
+
     init {
         cowZone.addException(ZoneBorders(3242,3254,3252,3277))
         cowZone.addException(ZoneBorders(3242,3277,3242,3296))
@@ -21,6 +38,8 @@ class CowKiller : Script() {
     }
 
     override fun tick() {
+        recordStall()
+
         when(state){
             State.KILLING -> {
                 scriptAPI.attackNpcInRadius(bot,"Cow",10)
@@ -50,18 +69,27 @@ class CowKiller : Script() {
                     if(closedGate != null && closedGate.location.withinDistance(bot.location,2)){
                         closedGate.interaction.handle(bot,closedGate.interaction[0])
                     } else {
-                        when (bot.location) {
-                            Location.create(3212, 3227, 0) -> {
+                        // Stair transitions by proximity (not exact-tile equality) so an off-tile
+                        // step doesn't strand the bot. Re-walk if stalled.
+                        when {
+                            bot.location.withinDistance(Location.create(3212, 3227, 0), 2) -> {
                                 val stairs = scriptAPI.getNearestGameObject(bot.location, 36776)
                                 stairs?.interaction?.handle(bot, stairs.interaction[0])
+                                stalledTicks = 0
                             }
-                            Location.create(3206, 3229, 1) -> {
+                            bot.location.withinDistance(Location.create(3206, 3229, 1), 2) -> {
                                 val stairs = scriptAPI.getNearestNode(36777, true)
                                 stairs?.interaction?.handle(bot, stairs.interaction[1])
+                                stalledTicks = 0
                             }
-                            Location.create(3206, 3229, 2) -> {
+                            bot.location.withinDistance(Location.create(3206, 3229, 2), 2) -> {
                                 scriptAPI.walkTo(bankZone.randomLoc)
                                 state = State.BANKING
+                                stalledTicks = 0
+                            }
+                            stalledTicks >= 6 -> {
+                                scriptAPI.walkTo(Location.create(3212, 3227, 0))
+                                stalledTicks = 0
                             }
                             else -> scriptAPI.walkTo(Location.create(3212, 3227, 0))
                         }
@@ -84,6 +112,10 @@ class CowKiller : Script() {
                             return true
                         }
                     })
+                } else {
+                    // Previously this branch was missing and the bot would hang forever if it
+                    // landed just outside bankZone after the stair climb.
+                    scriptAPI.walkTo(bankZone.randomLoc)
                 }
             }
 
@@ -92,16 +124,18 @@ class CowKiller : Script() {
                 if (bankZone.insideBorder(bot))
                     scriptAPI.walkTo(Location.create(3206, 3229, 2))
                 else {
-                    when (bot.location) {
-                        Location.create(3206, 3229, 2) -> {
+                    when {
+                        bot.location.withinDistance(Location.create(3206, 3229, 2), 2) -> {
                             val stairs = scriptAPI.getNearestNode(36778, true)
                             stairs?.interaction?.handle(bot, stairs.interaction[0])
+                            stalledTicks = 0
                         }
-                        Location.create(3206, 3229, 1) -> {
+                        bot.location.withinDistance(Location.create(3206, 3229, 1), 2) -> {
                             val stairs = scriptAPI.getNearestNode(36777, true)
                             stairs?.interaction?.handle(bot, stairs.interaction[2])
+                            stalledTicks = 0
                         }
-                        Location.create(3252, 3267, 0) -> {
+                        bot.location.withinDistance(Location.create(3252, 3267, 0), 2) -> {
                             val closedGate = scriptAPI.getNearestNode(15516, true)
                             if (closedGate != null && closedGate.location.withinDistance(bot.location, 2)) {
                                 closedGate.interaction.handle(bot, closedGate.interaction[0])
@@ -109,6 +143,11 @@ class CowKiller : Script() {
                                 scriptAPI.walkTo(cowZone.randomLoc)
                                 state = State.KILLING
                             }
+                            stalledTicks = 0
+                        }
+                        stalledTicks >= 6 -> {
+                            scriptAPI.walkTo(Location.create(3252, 3267, 0))
+                            stalledTicks = 0
                         }
                         else -> scriptAPI.walkTo(Location.create(3252, 3267, 0))
                     }

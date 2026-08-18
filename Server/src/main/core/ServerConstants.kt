@@ -29,6 +29,30 @@ class ServerConstants {
         @JvmField
         var BOTS_INFLUENCE_PRICE_INDEX = true
 
+        /**
+         * Lootbeam QoL — draws a column-of-light graphic over notable NPC drops
+         * and notifies the killer. Era-anachronistic (OSRS-era QoL), so togglable.
+         * Enabled by default per the modern-QoL stance.
+         */
+        @JvmField
+        var LOOTBEAM_ENABLED: Boolean = true
+
+        /** Minimum total GE value (coins, stackables scaled by amount) for a beam when the item isn't tagged rare_item. */
+        @JvmField
+        var LOOTBEAM_VALUE_THRESHOLD: Int = 50_000
+
+        /** The spotanim (graphic) ID to render as the beam. Configurable in case the default is static in a given cache. */
+        @JvmField
+        var LOOTBEAM_GRAPHIC_ID: Int = 65
+
+        /** Re-send interval (server ticks, ~600ms each) while the drop is still on the ground. Keeps the beam visible. */
+        @JvmField
+        var LOOTBEAM_PULSE_TICKS: Int = 2
+
+        /** Hard cap on beam-pulse lifetime (ticks) so a forgotten drop can't beam forever. */
+        @JvmField
+        var LOOTBEAM_PULSE_MAX_TICKS: Int = 60
+
         @JvmField
         var SHUTDOWN_HOOK: Thread = Thread(SystemShutdownHook())
 
@@ -180,6 +204,13 @@ class ServerConstants {
 
         @JvmField
         var GRAFANA_TTL_DAYS = 7
+
+        // Local-only REST telemetry/diagnostic API (see core.game.system.TelemetryServer).
+        @JvmField
+        var TELEMETRY_ENABLED = true
+
+        @JvmField
+        var TELEMETRY_PORT = 8456
 
         //location names for the ::to command.
         val TELEPORT_DESTINATIONS = arrayOf(
@@ -368,5 +399,8 @@ class ServerConstants {
 
         @JvmField
         var CONNECTIVITY_TIMEOUT = 500
+
+        @JvmField
+        var OPENAI_API_KEY = ""
     }
 }

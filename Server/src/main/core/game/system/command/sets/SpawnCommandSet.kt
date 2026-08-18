@@ -3,6 +3,7 @@ package core.game.system.command.sets
 import core.api.log
 import core.api.sendMessage
 import core.cache.Cache
+import core.cache.def.impl.ItemDefinition
 import core.game.node.scenery.Scenery
 import core.game.node.scenery.SceneryBuilder
 import core.game.node.entity.npc.NPC
@@ -59,26 +60,100 @@ class SpawnCommandSet : CommandSet(Privilege.ADMIN){
         }
 
         /**
-         * Spawns an item with the given ID
+         * Spawns an item with the given ID or searches by name
          */
-        define("item", usage = "::item <lt>item-id<gt> [amount]", description = "Spawns the specified item stack into your inventory."){player,args ->
+        define("item", usage = "::item <lt>item-id|name<gt> [amount]", description = "Spawns the specified item by ID or name search into your inventory."){player,args ->
             if (args.size < 2) {
-                reject(player,"You must specify an item ID")
+                reject(player,"You must specify an item ID or name")
                 return@define
             }
-            val id = args[1].toIntOrNull() ?: return@define
-            var amount = (args.getOrNull(2) ?: "1").toInt()
-            if (id > Cache.getItemDefinitionsSize()) {
-                reject(player,"Item ID '$id' out of range.")
+
+            // If the first arg is a numeric ID, use legacy behavior
+            val numericId = args[1].toIntOrNull()
+            if (numericId != null) {
+                val id = numericId
+                var amount = (args.getOrNull(2) ?: "1").toIntOrNull() ?: 1
+                if (id > Cache.getItemDefinitionsSize()) {
+                    reject(player, "Item ID '$id' out of range.")
+                    return@define
+                }
+                val item = Item(id, amount)
+                val max = player.inventory.getMaximumAdd(item)
+                if (amount > max) {
+                    amount = max
+                }
+                item.setAmount(amount)
+                player.inventory.add(item)
                 return@define
             }
-            val item = Item(id, amount)
-            val max = player.inventory.getMaximumAdd(item)
-            if (amount > max) {
-                amount = max
+
+            // Name-based search: check if the last arg is a numeric amount
+            val lastArg = args.last()
+            val trailingAmount = lastArg.toIntOrNull()
+            val nameParts = if (trailingAmount != null && args.size > 2) {
+                args.drop(1).dropLast(1)
+            } else {
+                args.drop(1)
             }
-            item.setAmount(amount)
-            player.inventory.add(item)
+            val query = nameParts.joinToString(" ").lowercase()
+            var amount = trailingAmount ?: 1
+
+            // Search all item definitions
+            val maxId = Cache.getItemDefinitionsSize()
+            val matches = mutableListOf<Pair<Int, String>>()
+            var exactMatch: Pair<Int, String>? = null
+
+            for (i in 0 until maxId) {
+                val def = ItemDefinition.forId(i)
+                val name = def.name ?: continue
+                if (name.isBlank() || name == "null") continue
+                val nameLower = name.lowercase()
+                if (nameLower == query) {
+                    exactMatch = Pair(i, name)
+                    break
+                }
+                if (nameLower.contains(query)) {
+                    matches.add(Pair(i, name))
+                }
+            }
+
+            // Exact match: spawn it directly
+            if (exactMatch != null) {
+                val item = Item(exactMatch.first, amount)
+                val max = player.inventory.getMaximumAdd(item)
+                if (amount > max) amount = max
+                item.setAmount(amount)
+                player.inventory.add(item)
+                notify(player, "Spawned ${exactMatch.second} (ID: ${exactMatch.first}) x$amount")
+                return@define
+            }
+
+            // Single partial match: spawn it directly
+            if (matches.size == 1) {
+                val match = matches[0]
+                val item = Item(match.first, amount)
+                val max = player.inventory.getMaximumAdd(item)
+                if (amount > max) amount = max
+                item.setAmount(amount)
+                player.inventory.add(item)
+                notify(player, "Spawned ${match.second} (ID: ${match.first}) x$amount")
+                return@define
+            }
+
+            // No matches
+            if (matches.isEmpty()) {
+                reject(player, "No items found matching '$query'.")
+                return@define
+            }
+
+            // Multiple partial matches: list up to 10
+            notify(player, "Found ${matches.size} items matching '$query':")
+            for (match in matches.take(10)) {
+                notify(player, "  ID: ${match.first} - ${match.second}")
+            }
+            if (matches.size > 10) {
+                notify(player, "  ...and ${matches.size - 10} more. Refine your search.")
+            }
         }
 
         /**

@@ -1,6 +1,7 @@
 package core.game.world
 
 import content.global.bots.*
+import core.api.log
 import core.api.StartupListener
 import core.game.node.entity.combat.CombatStyle
 import core.game.world.map.Location
@@ -8,6 +9,10 @@ import core.game.world.map.zone.ZoneBorders
 import core.game.bots.GeneralBotCreator
 import core.game.bots.CombatBotAssembler
 import core.game.bots.SkillingBotAssembler
+import core.game.bots.AIRepository
+import core.game.system.task.Pulse
+import core.tools.Log
+import core.tools.RandomFunction
 import java.util.Timer
 import java.util.concurrent.Executors
 import kotlin.concurrent.schedule
@@ -18,12 +23,18 @@ class ImmerseWorld : StartupListener {
     override fun startup() {
         if(GameWorld.settings?.max_adv_bots!! > 0) {
             spawnBots()
+        } else {
+            log(ImmerseWorld::class.java, Log.INFO, "[ImmerseWorld] Skipping immersive bots: max_adv_bots <= 0.")
         }
     }
 
     companion object {
         var assembler = CombatBotAssembler()
         var skillingBotAssembler = SkillingBotAssembler()
+        private var adventurerBackfillMonitorStarted = false
+
+        private const val ADVENTURER_BACKFILL_TICKS = 50 // 30 seconds at 600ms/tick.
+        private const val ADVENTURER_BACKFILL_BATCH = 5  // Keep top-up gradual to avoid spikes.
 
         private fun randomizeLocationInRanges(location: Location, xMin: Int, xMax: Int, yMin: Int, yMax: Int): Location {
             val newX = location.x + Random.nextInt(xMin, xMax)
@@ -35,42 +46,108 @@ class ImmerseWorld : StartupListener {
         {
             if(GameWorld.settings!!.enable_bots)
             {
+                log(ImmerseWorld::class.java, Log.INFO, "[ImmerseWorld] Bot spawning enabled. Beginning immersive bot spawn pass.")
+                startAdventurerBackfillMonitor()
                 Executors.newSingleThreadExecutor().execute {
                     Thread.currentThread().name = "BotSpawner"
                     immerseSeersAndCatherby()
+                    immerseSeersAndCatherby()
                     immerseLumbridgeDraynor()
+                    immerseLumbridgeDraynor()
+                    immerseVarrock()
                     immerseVarrock()
                     immerseWilderness()
                     immerseFishingGuild()
                     immerseAdventurer()
 					immerseFalador()
-                    // immerseSlayer()
+                    immerseKaramja()
+                    immerseSlayer()
                     immerseGE()
+                    immerseEdgeville()
                 }
+            } else {
+                log(ImmerseWorld::class.java, Log.INFO, "[ImmerseWorld] Skipping immersive bots: enable_bots=false.")
             }
         }
 
-        fun immerseAdventurer(){
-            for (i in 0..(GameWorld.settings?.max_adv_bots ?: 50)){
-                var random = Random.nextInt(20000, 400000).toLong()
-                Timer().schedule(random){
-                    spawn_adventurers()
+        private fun startAdventurerBackfillMonitor() {
+            if (adventurerBackfillMonitorStarted) return
+            adventurerBackfillMonitorStarted = true
+            GameWorld.Pulser.submit(object : Pulse(ADVENTURER_BACKFILL_TICKS) {
+                override fun pulse(): Boolean {
+                    if (GameWorld.settings?.enable_bots != true) return false
+
+                    val target = GameWorld.settings?.max_adv_bots ?: 0
+                    if (target <= 0) return false
+
+                    val aliveAdventurers = AIRepository.PulseRepository.values.count {
+                        it.botScript is Adventurer && it.botScript.bot.isActive
+                    }
+                    val missing = target - aliveAdventurers
+                    if (missing <= 0) return false
+
+                    val toSpawn = minOf(missing, ADVENTURER_BACKFILL_BATCH)
+                    repeat(toSpawn) {
+                        spawn_adventurers()
+                    }
+                    log(
+                        ImmerseWorld::class.java,
+                        Log.INFO,
+                        "[ImmerseWorld] Adventurer backfill spawned $toSpawn bot(s). Alive=$aliveAdventurers Target=$target."
+                    )
+                    return false
+                }
+            })
+            log(ImmerseWorld::class.java, Log.INFO, "[ImmerseWorld] Adventurer backfill monitor started (every 30 seconds).")
+        }
+
+        fun immerseAdventurer() {
+            val maxBots = GameWorld.settings?.max_adv_bots ?: 50
+
+            for (i in 0..maxBots) {
+                // 1. Spawns the bot safely
+                spawn_adventurers()
+
+                // 2. Pauses this specific thread for 50 milliseconds before spawning the next one.
+                // This spawns exactly 10 bots per second.
+                // 1000 bots will take exactly 100 seconds to seamlessly load into the world without colliding!
+                try {
+                    Thread.sleep(100)
+                } catch (e: InterruptedException) {
+                    e.printStackTrace()
                 }
             }
         }
 
         fun spawn_adventurers() {
-            val lumbridge = Location.create(3221, 3219, 0)
-            val tiers = listOf<CombatBotAssembler.Tier>(CombatBotAssembler.Tier.LOW, CombatBotAssembler.Tier.MED)
+
+            val startLocations = listOf(
+                Location.create(3221, 3219, 0), // Lumbridge Courtyard
+                Location.create(3164, 3226, 0), // Lumbridge Swamp
+                Location.create(3145, 3314, 0), // Draynor Wheat Field
+                Location.create(3290, 3373, 0), // Varrock South Gate
+                Location.create(2966, 3392, 0), // Falador North Gate
+                Location.create(3293, 3183, 0)  // Al Kharid Tent
+            )
+
+            val safeCityTile = startLocations.random()
+
+            val tiers = listOf(
+                CombatBotAssembler.Tier.LOW, CombatBotAssembler.Tier.LOW,
+                CombatBotAssembler.Tier.MED, CombatBotAssembler.Tier.MED,
+                CombatBotAssembler.Tier.HIGH
+            )
+            val selectedTier = tiers.random()
+
             if (Random.nextBoolean()) {
                 GeneralBotCreator(
                     Adventurer(CombatStyle.MELEE),
-                    assembler.MeleeAdventurer(tiers.random(), randomizeLocationInRanges(lumbridge,-1,1,-1,1))
+                    assembler.MeleeAdventurer(selectedTier, safeCityTile)
                 )
             } else {
                 GeneralBotCreator(
                     Adventurer(CombatStyle.RANGE),
-                    assembler.RangeAdventurer(tiers.random(), randomizeLocationInRanges(lumbridge,-1,1,-1,1))
+                    assembler.RangeAdventurer(selectedTier, safeCityTile)
                 )
             }
         }
@@ -80,6 +157,22 @@ class ImmerseWorld : StartupListener {
             for (i in (0..4)) {
                 GeneralBotCreator(SharkCatcher(), fishingGuild)
             }
+        }
+
+        fun immerseKaramja() {
+            // Karamja Musa Point dock fishers
+            GeneralBotCreator(
+                KaramjaFisher(),
+                skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(2924, 3178, 0))
+            )
+            GeneralBotCreator(
+                KaramjaFisher(),
+                skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(2926, 3176, 0))
+            )
+            GeneralBotCreator(
+                KaramjaFisher(),
+                skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(2921, 3179, 0))
+            )
         }
 
         fun immerseSeersAndCatherby() {
@@ -100,6 +193,15 @@ class ImmerseWorld : StartupListener {
                 skillingBotAssembler.produce(SkillingBotAssembler.Wealth.AVERAGE, Location.create(2807, 3441, 0))
             )
             GeneralBotCreator(LobsterCatcher(), Location.create(2805, 3435, 0))
+            // Catherby beach net fishers
+            GeneralBotCreator(
+                CatherbyFisher(),
+                skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(2845, 3431, 0))
+            )
+            GeneralBotCreator(
+                CatherbyFisher(),
+                skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(2851, 3430, 0))
+            )
         }
 
         fun immerseLumbridgeDraynor() {
@@ -172,6 +274,28 @@ class ImmerseWorld : StartupListener {
                 DraynorFisher(),
                 skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(3095, 3246, 0))
             )
+            GeneralBotCreator(
+                DraynorFisher(),
+                skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(3095, 3246, 0))
+            )
+            // Al Kharid Miners
+            GeneralBotCreator(
+                AlKharidMiner(),
+                skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(3269, 3166, 0))
+            )
+            GeneralBotCreator(
+                AlKharidMiner(),
+                skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(3269, 3166, 0))
+            )
+            // Al Kharid Smithers
+            GeneralBotCreator(
+                AlKharidSmither(),
+                skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(3269, 3166, 0))
+            )
+            GeneralBotCreator(
+                AlKharidSmither(),
+                skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(3269, 3166, 0))
+            )
         }
 
         fun immerseVarrock() {
@@ -204,6 +328,19 @@ class ImmerseWorld : StartupListener {
                 NonBankingMiner(),
                 skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(3182, 3374, 0))
             )
+            // Barbarian Village Fishers
+            GeneralBotCreator(
+                BarbarianFisher(),
+                skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(3104, 3430, 0))
+            )
+            GeneralBotCreator(
+                BarbarianFisher(),
+                skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(3107, 3433, 0))
+            )
+            GeneralBotCreator(
+                BarbarianFisher(),
+                skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(3110, 3435, 0))
+            )
         }
 
         fun immerseWilderness() {
@@ -215,6 +352,32 @@ class ImmerseWorld : StartupListener {
                     assembler.assembleMeleeDragonBot(CombatBotAssembler.Tier.MED, wilderness)
                 )
             }
+            // PvP Bots — 120 total: ~1/3 aggressors (skulled, hunt players) and
+            // ~2/3 neutrals (unskulled, retaliate only). Spawn tier is rolled
+            // independently of aggression (25% LOW / 40% MED / 35% HIGH) so the
+            // population's combat levels — and therefore their willingness to
+            // push deep in the risk model — vary like real PKer traffic. Spawned
+            // staggered like the Adventurer pass so 120 combat bodies don't
+            // materialise in one burst.
+            val pkerTotal = 120
+            val aggressorCount = pkerTotal / 3
+            repeat(pkerTotal) { i ->
+                val isAggressive = i < aggressorCount
+                val tier = when (RandomFunction.random(100)) {
+                    in 0..24  -> CombatBotAssembler.Tier.LOW
+                    in 25..64 -> CombatBotAssembler.Tier.MED
+                    else      -> CombatBotAssembler.Tier.HIGH
+                }
+                GeneralBotCreator(
+                    WildernessPKer(aggressive = isAggressive),
+                    assembler.produce(CombatBotAssembler.Type.MELEE, tier, wilderness)
+                )
+                try {
+                    Thread.sleep(50)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+            }
         }
 
         fun immerseFalador() {
@@ -222,10 +385,28 @@ class ImmerseWorld : StartupListener {
                 CoalMiner(),
                 skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(3037, 9737, 0))
             )
-			GeneralBotCreator(
-				CannonballSmelter(),
-				skillingBotAssembler.produce(SkillingBotAssembler.Wealth.AVERAGE, Location.create(3013, 3356, 0))
-			)
+            // Falador mining-guild iron miners (2) — F2P iron cluster east of the coal area.
+            repeat(2) {
+                GeneralBotCreator(
+                    FaladorIronMiner(),
+                    skillingBotAssembler.produce(SkillingBotAssembler.Wealth.POOR, Location.create(3037, 9737, 0))
+                )
+            }
+            GeneralBotCreator(
+                CannonballSmelter(),
+                skillingBotAssembler.produce(SkillingBotAssembler.Wealth.AVERAGE, Location.create(3013, 3356, 0))
+            )
+        }
+
+        fun immerseEdgeville() {
+            log(ImmerseWorld::class.java, Log.INFO, "[ImmerseWorld] Starting Edgeville immersion spawns.")
+            // Edgeville yew choppers (3) — yews south of Edgeville bank.
+            repeat(3) {
+                GeneralBotCreator(
+                    EdgevilleYewChopper(),
+                    skillingBotAssembler.produce(SkillingBotAssembler.Wealth.AVERAGE, Location.create(3093, 3493, 0))
+                )
+            }
         }
 
         fun immerseSlayer() {
@@ -240,6 +421,22 @@ class ImmerseWorld : StartupListener {
         }
 
         private fun immerseGE() {
+            log(ImmerseWorld::class.java, Log.INFO, "[ImmerseWorld] Starting GE immersion spawns.")
+            repeat(6) {
+                val spawnLoc = GEFiremaker.startingLocs.random()
+                log(
+                    ImmerseWorld::class.java,
+                    Log.INFO,
+                    "[ImmerseWorld] Spawning GEFiremaker ${it + 1}/4 at (${spawnLoc.x}, ${spawnLoc.y}, ${spawnLoc.z})."
+                )
+                GeneralBotCreator(
+                    GEFiremaker(),
+                    skillingBotAssembler.produce(
+                        SkillingBotAssembler.Wealth.values().random(),
+                        spawnLoc
+                    )
+                )
+            }
             spawnDoubleMoneyBot(false)
         }
 

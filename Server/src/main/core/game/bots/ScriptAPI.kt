@@ -8,6 +8,7 @@ import core.cache.def.impl.ItemDefinition
 import core.game.component.Component
 import core.game.consumable.Consumable
 import content.data.consumables.Consumables
+import content.region.wilderness.handlers.WildernessInterfacePlugin
 import core.game.consumable.Food
 import content.data.consumables.effects.HealingEffect
 import core.game.interaction.DestinationFlag
@@ -90,6 +91,39 @@ class ScriptAPI(private val bot: Player) {
         }
 
         if(!InteractionListeners.run(node.id, type, option, bot, node)) node.interaction.handle(bot, opt)
+    }
+
+    /**
+     * Ticks spent repeatedly trying to cross a wilderness ditch without the
+     * crossing sticking — drives the forced-jump fallback in [crossDitch].
+     */
+    private var ditchStallTicks = 0
+
+    /**
+     * Crosses a Wilderness Ditch node. Tries the authentic "Cross" interaction
+     * first; if the bot has been attempting for 10 consecutive ticks without
+     * the crossing sticking (e.g. the nearest ditch segment lacks the
+     * option:cross handler — WildernessDitchPlugin only registers object
+     * 23271), falls back to WildernessInterfacePlugin's forced jump, which is
+     * the same ForceMovement the normal crossing resolves to.
+     *
+     * The caller must only pass ditch nodes found in the bot's CURRENT region:
+     * getNearestNode does not scan neighbouring regions, so a bot standing
+     * south of the y=3519/3520 region boundary cannot see the ditch at all.
+     *
+     * @param bot the bot crossing
+     * @param ditch the ditch scenery node
+     */
+    fun crossDitch(bot: Player, ditch: Node?) {
+        if (ditch == null) return
+        if (distance(bot, ditch) > 6) ditchStallTicks = 0 // fresh approach to a new ditch segment
+        ditchStallTicks++
+        if (ditchStallTicks >= 10) {
+            ditchStallTicks = 0
+            WildernessInterfacePlugin.handleBotDitch(bot, ditch)
+        } else {
+            interact(bot, ditch, "Cross")
+        }
     }
 
     fun useWith(bot: Player, itemId: Int, node: Node?) {
@@ -502,7 +536,8 @@ class ScriptAPI(private val bot: Player) {
                 }
                 val canSell = GrandExchange.addBotOffer(actualId, itemAmt)
                 if (canSell && saleIsBigNews(actualId, itemAmt)) {
-                    Repository.sendNews(SERVER_GE_NAME + " just offered " + itemAmt + " " + ItemDefinition.forId(actualId).name.toLowerCase() + " on the GE.")
+                    //Repository.sendNews(SERVER_GE_NAME + " just offered " + itemAmt + " " + ItemDefinition.forId(actualId).name.toLowerCase() + " on the GE.")
+                    Repository.sendNews("[Bot] " + bot.username + " just offered " + itemAmt + " " + ItemDefinition.forId(actualId).name.toLowerCase() + " on the GE.")
                 }
                 bot.bank.remove(Item(id, itemAmt))
                 bot.bank.refresh()
@@ -532,7 +567,7 @@ class ScriptAPI(private val bot: Player) {
                     }
                     val canSell = GrandExchange.addBotOffer(actualId, itemAmt)
                     if (canSell && saleIsBigNews(actualId, itemAmt)) {
-                        Repository.sendNews(SERVER_GE_NAME + " just offered " + itemAmt + " " + ItemDefinition.forId(actualId).name.toLowerCase() + " on the GE.")
+                        Repository.sendNews("[Bot] " + bot.username + " just offered " + itemAmt + " " + ItemDefinition.forId(actualId).name.toLowerCase() + " on the GE.")
                     }
                     bot.bank.remove(item)
                     bot.bank.refresh()
@@ -568,7 +603,7 @@ class ScriptAPI(private val bot: Player) {
                             1517 -> continue
                             1519 -> continue
                             1521 -> continue
-                            else -> sendNews(SERVER_GE_NAME + " just offered " + itemAmt + " " + ItemDefinition.forId(actualId).name.lowercase() + " on the GE.")
+                            else -> sendNews("[Bot] " + bot.username + " just offered " + itemAmt + " " + ItemDefinition.forId(actualId).name.lowercase() + " on the GE.")
                         }
                     }
                     bot.bank.remove(item)
@@ -594,7 +629,8 @@ class ScriptAPI(private val bot: Player) {
                 for (item in bot.inventory.toArray()) {
                     item ?: continue
                     when (item.id) {
-                        Items.RUNE_AXE_1359, Items.TINDERBOX_590, Items.ADAMANT_PICKAXE_1271, Items.COINS_995 -> continue
+                        // Keep the tools and combat food on the bot — everything else is banked
+                        Items.RUNE_AXE_1359, Items.TINDERBOX_590, Items.ADAMANT_PICKAXE_1271, Items.COINS_995, Items.SHARK_385 -> continue
                     }
                     bot.bank.add(item)
                     bot.inventory.remove(item)

@@ -129,12 +129,12 @@ class TutorialMagicTutorDialogueFile : DialogueLabeller() {
         label("xprate")
             options(
                 DialogueOption("1.0x","1.0x (default)", skipPlayer = true),
-                DialogueOption("2.5x","2.5x", skipPlayer = true),
                 DialogueOption("5.0x","5.0x", skipPlayer = true),
+                DialogueOption("10.0x","10.0x", skipPlayer = true),
                 title = "Change XP rate (current: ${player?.skills?.experienceMultiplier}x)",
                 unclosable = true
             )
-            for (rate in doubleArrayOf(1.0, 2.5, 5.0)) {
+            for (rate in doubleArrayOf(1.0, 5.0, 10.0)) {
                 label("${rate}x")
                 exec { player, _ -> player.skills.experienceMultiplier = rate }
                 manual(unclosable = true) { player, _ -> player.dialogueInterpreter.sendDialogue("You set your XP rate to: ${rate}x.") }

@@ -26,8 +26,8 @@ class GnomeBowstring : Script() {
     val banktopLadder = ZoneBorders(2445, 3415, 2446, 3414, 1)
     val spinnerbottomLadder = ZoneBorders (2475, 3400, 2476, 3399, 0)
     val spinnertopLadder = ZoneBorders (2474, 3397, 2476, 3399, 1)
-    val pick = ZoneBorders(2478, 3394, 339, 9)
-    val bank = ZoneBorders(2447, 3415, 2444, 3434)
+    // Gnome Stronghold bank area (ground floor) — used for orientation; min/max normalized.
+    val bank = ZoneBorders(2444, 3415, 2447, 3434)
     var overlay: ScriptAPI.BottingOverlay? = null
     override fun tick() {
 
@@ -160,7 +160,9 @@ class GnomeBowstring : Script() {
         }
     }
     override fun newInstance(): Script {
-        TODO("Not yet implemented")
+        val script = GnomeBowstring()
+        script.bot = SkillingBotAssembler().produce(SkillingBotAssembler.Wealth.POOR, bot.startLocation)
+        return script
     }
 }
 enum class State {

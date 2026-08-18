@@ -33,8 +33,10 @@ object PriceIndex {
         GEDB.run { conn ->
             val stmt = conn.prepareStatement(INSERT_QUERY)
             stmt.setInt(1, id)
-            stmt.setInt(2, itemDefinition(id).getAlchemyValue(true))
-            stmt.setInt(3, itemDefinition(id).getAlchemyValue(true))
+            val def = itemDefinition(id)
+            val basePrice = def.grandExchangePrice.takeIf { it > 0 } ?: def.getAlchemyValue(true)
+            stmt.setInt(2, basePrice)
+            stmt.setInt(3, basePrice)
             stmt.setInt(4, 0)
             stmt.setInt(5, 0)
             stmt.execute()
@@ -42,7 +44,8 @@ object PriceIndex {
     }
 
     fun getValue(id: Int): Int {
-        var value = itemDefinition(id).getAlchemyValue(true)
+        val def = itemDefinition(id)
+        var value = def.grandExchangePrice.takeIf { it > 0 } ?: def.getAlchemyValue(true)
         GEDB.run { conn ->
             val stmt = conn.prepareStatement(GET_VALUE_QUERY)
             stmt.setInt(1, id)
@@ -105,8 +108,24 @@ object PriceIndex {
         return priceInfo
     }
 
+    fun syncFromRemote(entries: List<Pair<Int, Int>>) {
+        // Run the batch write asynchronously so it never blocks the game tick thread.
+        GEDB.db.runAsync { conn ->
+            val stmt = conn.prepareStatement(SYNC_UPDATE_QUERY)
+            for ((itemId, value) in entries) {
+                stmt.setInt(1, value)
+                stmt.setLong(2, value.toLong())
+                stmt.setLong(3, System.currentTimeMillis())
+                stmt.setInt(4, itemId)
+                stmt.addBatch()
+            }
+            stmt.executeBatch()
+        }
+    }
+
     const val SELECT_QUERY = "SELECT * FROM price_index WHERE item_id = ?;"
     const val UPDATE_QUERY = "UPDATE price_index SET value = ?, total_value = ?, unique_trades = ?, last_update = ? WHERE item_id = ?;"
+    const val SYNC_UPDATE_QUERY = "UPDATE price_index SET value = ?, total_value = ?, unique_trades = 0, last_update = ? WHERE item_id = ?;"
     const val EXISTS_QUERY = "SELECT EXISTS(SELECT 1 FROM price_index WHERE item_id = ?);"
     const val REMOVE_QUERY = "DELETE FROM price_index WHERE item_id = ?;"
     const val INSERT_QUERY = "INSERT INTO price_index (item_id, value, total_value, unique_trades, last_update) VALUES (?,?,?,?,?);"

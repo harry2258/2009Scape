@@ -59,6 +59,15 @@ class UpdateMasks (val owner: Entity) {
     }
 
     /**
+     * Gets the context object associated with the given EntityFlag.
+     */
+    @Suppress("UNCHECKED_CAST")
+    fun <T> getContextAs(flag: EntityFlag): T? {
+        val provider = EntityFlags.getFlagFor(type, flag) ?: return null
+        return elements[provider.ordinal]?.context as? T
+    }
+
+    /**
      * Writes the flags.
      * @param p The player.
      * @param e The entity to update.

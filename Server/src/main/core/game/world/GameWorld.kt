@@ -97,6 +97,8 @@ object GameWorld {
      */
     @JvmStatic
     var ticks = 0
+    @JvmStatic
+    var lastCycleDurationMs = 0
 
     @JvmStatic
     var Pulser = PulseRunner()

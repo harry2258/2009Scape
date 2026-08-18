@@ -16,7 +16,10 @@ import core.game.world.update.flag.*
 import org.json.simple.JSONArray
 import org.json.simple.JSONObject
 import core.ServerConstants
+import core.api.getWorldTicks
 import core.api.log
+import core.cache.def.impl.ItemDefinition
+import core.game.bots.AIPlayer
 import core.game.bots.AIRepository
 import core.game.bots.CombatBotAssembler
 import core.game.bots.Script
@@ -33,6 +36,7 @@ import java.time.format.DateTimeFormatter
 import core.game.node.entity.player.link.emote.Emotes
 import content.data.Quests
 import kotlin.random.Random
+import java.util.Locale
 
 
 /**
@@ -62,6 +66,30 @@ class Adventurer(val style: CombatStyle): Script() {
     var sold: Boolean = false
     var poi: Boolean = false
 
+    // Conversation state: shared object between exactly two bots, driven by the initiator
+    var conversation: Conversation? = null
+    var convoCooldownUntil: Int = 0
+    var pendingReply: PendingReply? = null
+
+    // Trek state: segment-by-segment walking between cities so we can stop and smell the trees
+    var trekRoute: Array<Location>? = null
+    var trekIndex: Int = 0
+
+    // Gathering state: sustained chop/mine sessions
+    var gatherUntil: Int = 0
+    var gatherResourceMode: String = "trees"
+    var resumeTrekAfterGather: Boolean = false
+    var gatherStallTicks: Int = 0
+    var gatherLastInvCount: Int = -1
+
+    // Quest trip state: walk to a quest NPC, talk, and move on like a real quester
+    var questTarget: QuestTarget? = null
+    var questTalkUntil: Int = 0
+    var questInteracted: Boolean = false
+    var questCooldownUntil: Int = 0
+    var questLastTile: Location? = null
+    var questLastTileTick: Int = 0
+
     // Each bot gets a random personality that influences their behavior
     val personality: Trait = Trait.values().random()
 
@@ -74,6 +102,17 @@ class Adventurer(val style: CombatStyle): Script() {
     var geLongWait: Int = 0
     var walkingDestination: Location? = null
     var deathLocation: Location? = null
+
+    // World tick when the bot last changed areas (teleport/trek/POI hop). Drives the
+    // city-move impulse — the shared `counter` only grows on ADVENTURE-branch ticks,
+    // which gathering sessions, conversations and POI hopping keep far too low.
+    var lastCityMoveTick: Int = 0
+    // How long this bot likes to stay in one area before moving on (world ticks)
+    val cityMoveInterval: Int = if (personality == Trait.EXPLORER) {
+        Random.nextInt(600, 1200)
+    } else {
+        Random.nextInt(900, 1800)
+    }
 
 
     val type = when(style){
@@ -97,6 +136,8 @@ class Adventurer(val style: CombatStyle): Script() {
         
         // Add food
         inventory.add(Item(385, 10)) // 10 Sharks
+        // Opt into mid-combat eating (BotScriptPulse checks this ungated while attacking)
+        combatFoodId = 385
     }
 
     override fun toString(): String {
@@ -111,7 +152,25 @@ class Adventurer(val style: CombatStyle): Script() {
                 "Counter: $counter"
     }
 
+    override fun getDiagnosticState(): String {
+        // TelemetryTracker diffs this string every tick — counters (turn/segment)
+        // also keep active bots from being flagged stuck.
+        val extra = when (state) {
+            State.CONVERSATION -> conversation?.let { " topic=${it.topic},turn=${it.turnIndex + 1}/${it.turns.size}" } ?: ""
+            State.QUEST_TRAVEL, State.QUEST_TALK -> questTarget?.let { " quest=${it.questName}" } ?: ""
+            State.GATHERING -> " resource=$gatherResourceMode${if (resumeTrekAfterGather) ",trekDetour" else ""}"
+            State.IDLE_GE -> " wait=${counter.coerceAtMost(999)}"  // intentional idling — not a dead script
+            State.WALKING_PATH -> trekRoute?.let { " seg=${trekIndex + 1}/${it.size},dest=$walkingDestination" } ?: ""
+            else -> ""
+        }
+        return "${state.name}$extra [personality=$personality, city=$city, freshspawn=$freshspawn]"
+    }
+
     var state = State.START
+
+    // Zombie walking-queue detection (see tick()): last tile we stood on and when.
+    private var unstuckLastTile: Location? = null
+    private var unstuckLastTick = 0
 
     private fun getRandomCity(): Location{
         return cities.random()
@@ -158,6 +217,36 @@ class Adventurer(val style: CombatStyle): Script() {
         }
     }
 
+    /**
+     * Balanced mix: when a bot decides to move cities, take a walking route half
+     * the time (when one exists) instead of teleporting. Returns true if a trek
+     * (WALKING_PATH) was started.
+     */
+    fun tryTrekToNewCity(): Boolean {
+        val connectedCities = routeDefinitions
+            .filter { it.first == city || it.second == city }
+            .map { if (it.first == city) it.second else it.first }
+        val newCity = if (connectedCities.isNotEmpty() && personality != Trait.EXPLORER && randomNumberFromOne(100) < 80) {
+            connectedCities.random()
+        } else {
+            getRandomCity()
+        }
+        if (!cityLocationsGE.contains(newCity) && randomNumberFromOne(100) < 50) {
+            val route = findRoute(city, newCity)
+            if (route != null) {
+                lastCityMoveTick = getWorldTicks()
+                walkingDestination = newCity
+                trekRoute = route
+                trekIndex = 0
+                counter = 0
+                ticks = 0
+                state = State.WALKING_PATH
+                return true
+            }
+        }
+        return false
+    }
+
     private fun teleportToRandomCity() {
         city = getRandomCity()
         when (city) {
@@ -169,14 +258,21 @@ class Adventurer(val style: CombatStyle): Script() {
         }
     }
 
-    val resources = listOf(
-        "Rocks","Tree","Oak","Willow",
+    val treeResources = listOf(
+        "Tree","Oak","Willow",
         "Maple tree","Yew","Magic tree",
         "Teak","Mahogany")
 
+    val rockResources = listOf("Rocks")
+
     //TODO: Optimise and adjust how bots handle picking up ground items further.
     fun immerse() {
-        if (counter++ >= Random.nextInt(150,300)) { state = State.TELEPORTING }
+        if (getWorldTicks() - lastCityMoveTick >= cityMoveInterval) {
+            // Been in this area a while — time to move on. Half the time, walk there.
+            // Return immediately — the branches below would clobber the new state.
+            if (!tryTrekToNewCity()) state = State.TELEPORTING
+            return
+        }
         val items = AIRepository.groundItems[bot]
         // FIGHTER bots prefer combat, SKILLER bots prefer gathering, others flip a coin
         val preferCombat = when (personality) {
@@ -197,12 +293,9 @@ class Adventurer(val style: CombatStyle): Script() {
             if (bot.inventory.isFull){
                 checkNearBank()
             } else {
-                val resource = scriptAPI.getNearestNodeFromList(resources,true)
-                if(resource != null){
-                    if(resource.name.contains("ocks")) InteractionListeners.run(resource.id,
-                        IntType.SCENERY,"mine",bot,resource)
-                    else InteractionListeners.run(resource.id, IntType.SCENERY,"chop down",bot,resource)
-                }
+                // Settle in for a real skilling session instead of a single click
+                val maxDuration = if (personality == Trait.SKILLER) 1000 else 600
+                startGathering(Random.nextInt(150, maxDuration), resumeTrek = false)
             }
         }
         return
@@ -253,6 +346,208 @@ class Adventurer(val style: CombatStyle): Script() {
         state = State.START
     }
 
+    /**
+     * Conversation between exactly two Adventurer bots. The initiator drives
+     * turn-taking from its own tick(); the partner just faces them and waits.
+     */
+    fun maybeStartConversation(): Boolean {
+        val now = getWorldTicks()
+        if (now < convoCooldownUntil || conversation != null) return false
+        val candidates = RegionManager.getLocalPlayers(bot)
+            .filter { p -> p !== bot && p is AIPlayer && bot.location.withinDistance(p.location, 10) }
+        for (p in candidates.shuffled().take(4)) {
+            val other = AIRepository.PulseRepository[p.username.lowercase()]?.botScript as? Adventurer ?: continue
+            if (other.state != State.ADVENTURE && other.state != State.IDLE_GE) continue
+            if (other.conversation != null || now < other.convoCooldownUntil) continue
+            if (other.bot.inCombat()) continue
+            val topic = conversationTopics.keys.random()
+            val turns = conversationTopics[topic] ?: continue
+            val convo = Conversation(this, other, topic, turns, 0, now, now)
+            conversation = convo
+            other.conversation = convo
+            state = State.CONVERSATION
+            other.state = State.CONVERSATION
+            return true
+        }
+        return false
+    }
+
+    /** Ends the shared conversation from either side and releases both bots. */
+    fun endConversation() {
+        val convo = conversation ?: return
+        conversation = null
+        convoCooldownUntil = getWorldTicks() + Random.nextInt(60, 200)
+        if (state == State.CONVERSATION) state = State.ADVENTURE
+        val other = if (convo.initiator === this) convo.partner else convo.initiator
+        if (other.conversation === convo) {
+            other.conversation = null
+            other.convoCooldownUntil = getWorldTicks() + Random.nextInt(60, 200)
+            if (other.state == State.CONVERSATION) other.state = State.ADVENTURE
+        }
+    }
+
+    private fun conversationStillValid(convo: Conversation): Boolean {
+        val other = if (convo.initiator === this) convo.partner else convo.initiator
+        return other.conversation === convo
+            && other.state == State.CONVERSATION
+            && !other.bot.getAttribute("dead", false)
+            && bot.location.withinDistance(other.bot.location, 15)
+    }
+
+    /** Conversation turn-taking — runs for both participants; only the initiator advances turns. */
+    private fun tickConversation() {
+        val convo = conversation
+        if (convo == null) {
+            state = State.ADVENTURE
+            return
+        }
+        val now = getWorldTicks()
+        if (now - convo.lastProgressTick > 120 || !conversationStillValid(convo)) {
+            endConversation()
+            return
+        }
+        val partner = if (convo.initiator === this) convo.partner else convo.initiator
+        bot.face(partner.bot)
+        if (convo.initiator !== this) return
+
+        if (now >= convo.nextTurnTick && convo.turnIndex < convo.turns.size) {
+            val speaker = if (convo.turnIndex % 2 == 0) convo.initiator else convo.partner
+            val listener = if (speaker === convo.initiator) convo.partner else convo.initiator
+            val raw = convo.turns[convo.turnIndex].random()
+            speaker.scriptAPI.sendChat(resolveLine(raw, listener.bot.username))
+            registerUtterance(speaker.bot.username, raw, maxClaims = 1)
+            speaker.bot.face(listener.bot)
+            listener.bot.face(speaker.bot)
+            convo.turnIndex++
+            convo.nextTurnTick = now + Random.nextInt(3, 9)
+            convo.lastProgressTick = now
+        }
+        if (convo.turnIndex >= convo.turns.size) {
+            endConversation()
+        }
+    }
+
+    /** Claims a recent utterance from another bot and queues a delayed reply. */
+    fun maybeReply() {
+        val claimed = findAndClaimUtterance(bot.username) ?: return
+        val line = resolveLine(claimed.second.lines.random(), claimed.first.speaker)
+        pendingReply = PendingReply(getWorldTicks() + Random.nextInt(2, 6), line)
+    }
+
+    /** Begin a sustained chop/mine session; resumeTrek returns to WALKING_PATH afterwards. */
+    fun startGathering(durationTicks: Int, resumeTrek: Boolean) {
+        gatherUntil = getWorldTicks() + durationTicks
+        gatherResourceMode = when {
+            personality == Trait.SKILLER && Random.nextBoolean() -> "rocks"
+            Random.nextInt(100) < 25 -> "rocks"
+            else -> "trees"
+        }
+        resumeTrekAfterGather = resumeTrek
+        gatherStallTicks = 0
+        gatherLastInvCount = -1
+        // NB: deliberately NOT resetting `counter` — it drives the city-move impulse
+        // in immerse(); frequent gathering sessions would keep it from ever maturing.
+        state = State.GATHERING
+    }
+
+    private fun tickGathering() {
+        val now = getWorldTicks()
+        // Stall detection: if we keep ticking without the inventory growing, the
+        // resource/interaction is unreachable — end the session instead of re-wedging.
+        val invCount = bot.inventory.toArray().count { it != null }
+        if (gatherLastInvCount < 0 || invCount > gatherLastInvCount) {
+            gatherStallTicks = 0
+        } else if (invCount == gatherLastInvCount) {
+            gatherStallTicks++
+        }
+        gatherLastInvCount = invCount
+        if (gatherStallTicks > 8) {
+            state = if (resumeTrekAfterGather) State.WALKING_PATH else State.ADVENTURE
+            return
+        }
+        if (bot.inventory.isFull) {
+            if (resumeTrekAfterGather) state = State.WALKING_PATH else checkNearBank()
+            return
+        }
+        if (now >= gatherUntil) {
+            state = if (resumeTrekAfterGather) State.WALKING_PATH else State.ADVENTURE
+            return
+        }
+        // We only reach tick() when idle — the authentic skill pulse does the actual chopping
+        val list = if (gatherResourceMode == "rocks") rockResources else treeResources
+        val resource = scriptAPI.getNearestNodeFromList(list, true)
+        if (resource != null) {
+            if (resource.name.contains("ocks")) InteractionListeners.run(resource.id,
+                IntType.SCENERY,"mine",bot,resource)
+            else InteractionListeners.run(resource.id, IntType.SCENERY,"chop down",bot,resource)
+        } else {
+            // No resource around here — wrap the session up early
+            state = if (resumeTrekAfterGather) State.WALKING_PATH else State.ADVENTURE
+        }
+        // Occasional skill-flavor chat while working
+        if (randomNumberFromOne(1000) <= 4 && otherPlayersNearby()) {
+            dialogue()
+        }
+    }
+
+    /** Pick a quest NPC, walk there, and Talk-To them like a fresh quester. */
+    fun startQuestTrip() {
+        // Only quest near where we already are — real players don't cross the map for a
+        // starter quest, and short trips keep the pathfinder off hostile terrain.
+        val nearby = questNpcs.filter { bot.location.getDistance(it.loc) < 120 }
+        if (nearby.isEmpty()) return
+        questTarget = nearby.random()
+        counter = 0
+        ticks = 0
+        state = State.QUEST_TRAVEL
+        if (randomNumberFromOne(100) <= 25) {
+            val target = questTarget!!
+            scriptAPI.sendChat(resolveLine(questArrivalLines.random().replace("@quest", target.questName), null))
+        }
+    }
+
+    private fun tickQuestTalk() {
+        val target = questTarget
+        if (target == null) {
+            state = State.ADVENTURE
+            return
+        }
+        if (getWorldTicks() >= questTalkUntil) {
+            finishQuestTrip()
+            return
+        }
+        if (!questInteracted) {
+            val npc = scriptAPI.getNearestNode(target.npcName, false)
+            if (npc != null) {
+                if (bot.location.withinDistance(npc.location, 6)) {
+                    bot.faceLocation(npc.location)
+                    scriptAPI.interact(bot, npc, "Talk-To")
+                    questInteracted = true
+                } else {
+                    scriptAPI.walkTo(npc.location)
+                }
+            } else {
+                // NPC not loaded in this region — head to its spawn tile and wait out the timer
+                scriptAPI.walkTo(target.loc)
+            }
+        }
+    }
+
+    fun finishQuestTrip() {
+        val target = questTarget
+        // Close whatever the Talk-To opened (same pattern as LawCrafter banking)
+        bot.interfaceManager.closeChatbox()
+        bot.dialogueInterpreter.close()
+        if (target != null && randomNumberFromOne(100) <= 40) {
+            scriptAPI.sendChat(resolveLine(questDoneLines.random().replace("@quest", target.questName), null))
+        }
+        questTarget = null
+        questCooldownUntil = getWorldTicks() + Random.nextInt(500, 1500)
+        counter = 0
+        ticks = 0
+        state = State.ADVENTURE
+    }
+
     //Adventure Bots Actual Code STARTS HERE!!!
     // 100 ticks = 60 seconds
     override fun tick() {
@@ -260,7 +555,14 @@ class Adventurer(val style: CombatStyle): Script() {
 
         if (bot.getAttribute("dead", false)) {
             bot.removeAttribute("dead")
-            val locObj = bot.getAttribute("bot_death_location", null)
+            // Drop any social/quest activity before recovering
+            endConversation()
+            pendingReply = null
+            questTarget = null
+            // Explicit Any? type: a bare `null` default makes Kotlin infer T = Void
+            // in Entity.getAttribute's Java generics, so the implicit cast to Void
+            // throws ClassCastException whenever the attribute holds a Location.
+            val locObj: Any? = bot.getAttribute("bot_death_location", null)
             if (locObj != null && locObj is Location) {
                 deathLocation = locObj
                 state = State.RECOVER_DEATH
@@ -269,8 +571,40 @@ class Adventurer(val style: CombatStyle): Script() {
             }
         }
 
-        if (bot.inCombat()) {
-            scriptAPI.eat(385)
+        // Eat between fights whenever HP drops into eat()'s threshold range. The
+        // inCombat() guard this replaced never fired: tick() is paused during
+        // combat, and inCombat() (a 10s victim debuff) is usually false again by
+        // the time a kill ends and tick() resumes. Mid-fight eating is handled
+        // by the combatFoodId hook in BotScriptPulse, which runs ungated.
+        scriptAPI.eat(385)
+
+        // Zombie walking-queue revive. When a movement pulse is stopped (e.g. by
+        // BotScriptPulse's no-progress watchdog) its queued points survive, so
+        // walkingQueue.isMoving() stays true forever — and walkTo/randomWalkTo
+        // silently no-op on "!isMoving". The bot then stands still in whatever
+        // state it was in (FIND_BANK/IDLE_GE/ADVENTURE...) until a checkCounter
+        // teleport bails it out. If the queue claims movement but we haven't
+        // changed tiles in a while, clear it so walking works again.
+        if (bot.walkingQueue.isMoving) {
+            val now = getWorldTicks()
+            if (unstuckLastTile != bot.location) {
+                unstuckLastTile = bot.location
+                unstuckLastTick = now
+            } else if (now - unstuckLastTick >= 25) {
+                bot.walkingQueue.reset()
+                unstuckLastTick = now
+            }
+        }
+
+        // Fire any queued reply to another bot's chat
+        val reply = pendingReply
+        if (reply != null) {
+            if (state == State.CONVERSATION) {
+                pendingReply = null
+            } else if (getWorldTicks() >= reply.dueTick) {
+                pendingReply = null
+                scriptAPI.sendChat(reply.line)
+            }
         }
 
 
@@ -354,6 +688,7 @@ class Adventurer(val style: CombatStyle): Script() {
                 teleportToRandomCity()
                 poi = false
                 sold = false
+                lastCityMoveTick = getWorldTicks()
                 ticks = 0
                 counter = 0
                 state = State.ADVENTURE
@@ -362,6 +697,25 @@ class Adventurer(val style: CombatStyle): Script() {
 
             State.ADVENTURE -> {
                 checkCounter(800)
+
+                // Conversation chance — SOCIAL bots strike up bot-to-bot chats far more
+                if (!poi && conversation == null &&
+                    randomNumberFromOne(1000) <= if (personality == Trait.SOCIAL) 25 else 8) {
+                    if (maybeStartConversation()) return
+                }
+
+                // Rare: reply to something a nearby bot just said (max 1-2 responders via claiming)
+                if (pendingReply == null && conversation == null &&
+                    randomNumberFromOne(1000) <= 40 && otherPlayersNearby()) {
+                    maybeReply()
+                }
+
+                // Quest trip chance — EXPLORER bots go questing more
+                if (!poi && getWorldTicks() >= questCooldownUntil &&
+                    randomNumberFromOne(1000) <= if (personality == Trait.EXPLORER) 8 else 3) {
+                    startQuestTrip()
+                    return
+                }
 
                 // Dialogue chance — SOCIAL bots chat 3x more
                 val dialogueChance = if (personality == Trait.SOCIAL) 30 else 10
@@ -483,6 +837,7 @@ class Adventurer(val style: CombatStyle): Script() {
                     poiloc = getRandomPoi()
                     city = teak1
                     poi = true
+                    lastCityMoveTick = getWorldTicks()
                     scriptAPI.teleport(poiloc)
                     return
                 }
@@ -517,14 +872,15 @@ class Adventurer(val style: CombatStyle): Script() {
                         getRandomCity()
                     }
 
-                    // Try to find a walking route instead of teleporting
+                    // Balanced mix: when a walking route exists, take it half the time
                     if (!cityLocationsGE.contains(newCity)) {
                         val route = findRoute(city, newCity)
-                        if (route != null) {
+                        if (route != null && randomNumberFromOne(100) < 50) {
                             walkingDestination = newCity
+                            trekRoute = route
+                            trekIndex = 0
                             counter = 0
                             ticks = 0
-                            scriptAPI.walkArray(route)
                             state = State.WALKING_PATH
                             return
                         }
@@ -550,7 +906,16 @@ class Adventurer(val style: CombatStyle): Script() {
             }
 
             State.IDLE_GE -> {
-                returnToAdventure = Random.nextInt(350, 750)
+                returnToAdventure = Random.nextInt(200, 420)
+                // GE is a social hub — let bots strike up conversations and reply to each other
+                if (conversation == null &&
+                    randomNumberFromOne(1000) <= if (personality == Trait.SOCIAL) 25 else 8) {
+                    if (maybeStartConversation()) return
+                }
+                if (pendingReply == null && conversation == null &&
+                    randomNumberFromOne(1000) <= 40 && otherPlayersNearby()) {
+                    maybeReply()
+                }
                 if (counter++ >= returnToAdventure){
                     if (randomNumberFromOne(100) <= 25){
                         ticks = 0
@@ -558,6 +923,7 @@ class Adventurer(val style: CombatStyle): Script() {
                         poiloc = getRandomPoi()
                         city = teak1
                         poi = true
+                        lastCityMoveTick = getWorldTicks()
                         scriptAPI.teleport(poiloc)
                         state = State.ADVENTURE
                         return
@@ -569,10 +935,12 @@ class Adventurer(val style: CombatStyle): Script() {
                     }
                 }
                 if (cityLocationsGE.contains(city)){
-                    if (randomNumberFromOne(1000) <= 5) {
+                    // Shuffle often enough that a full GE idle never freezes us in
+                    // place (the stuck detector fires after 100 idle ticks).
+                    if (randomNumberFromOne(1000) <= 20) {
                         ticks = 0
                         geSocialLoc = scriptAPI.randomizeLocationInRanges(getRandomGESocialLocation(),-1,1,-1,1,0)
-                    } else if (randomNumberFromOne(1000) <= 10) {
+                    } else if (randomNumberFromOne(1000) <= 35) {
                         ticks = 0
                         scriptAPI.randomWalkTo(geSocialLoc, randomNumberFromOne(5))
                         return
@@ -635,13 +1003,22 @@ class Adventurer(val style: CombatStyle): Script() {
 
             State.FIND_BANK -> {
                 val bank: Scenery? = scriptAPI.getNearestNode("Bank booth", true) as Scenery?
-                if (bank == null) { state = State.TELEPORTING }
-                if (bank != null && randomNumberFromOne(100) <= 5) {
+                if (bank == null) { state = State.TELEPORTING; return }
+                // We're at the bank — try the deposit often (the BankingPulse can
+                // fail silently when the booth is crowded or the walk was eaten by a
+                // stale queue), and shuffle a little so we never freeze in place.
+                if (randomNumberFromOne(100) <= 35) {
                     scriptAPI.depositAtBank()
-                } else if (bank != null && randomNumberFromOne(100) <= 5){
-                    scriptAPI.randomWalkTo(bank.location,3)
+                    // Top the shark stack back up while we're here — 10 sharks last
+                    // roughly an hour of fighting, and bots that run dry just die.
+                    val sharks = bot.inventory.getAmount(385)
+                    if (sharks < 10) {
+                        bot.inventory.add(Item(385, 10 - sharks))
+                    }
+                } else if (randomNumberFromOne(100) <= 10) {
+                    scriptAPI.randomWalkTo(bank.location, 3)
                 }
-                checkCounter(500)
+                checkCounter(250)
                 return
             }
 
@@ -660,22 +1037,114 @@ class Adventurer(val style: CombatStyle): Script() {
                 return
             }
 
+            State.CONVERSATION -> {
+                tickConversation()
+                return
+            }
+
+            State.GATHERING -> {
+                tickGathering()
+                return
+            }
+
+            State.QUEST_TRAVEL -> {
+                val target = questTarget
+                if (target == null) {
+                    state = State.ADVENTURE
+                    return
+                }
+                // No-progress watchdog: wedged walks get cleared by BotScriptPulse's
+                // stale-interaction watchdog (which grants us a tick every ~300), so if
+                // we get to run but still haven't moved, abandon the trip.
+                val now = getWorldTicks()
+                if (questLastTile == null || bot.location != questLastTile) {
+                    questLastTile = bot.location
+                    questLastTileTick = now
+                } else if (now - questLastTileTick > 150) {
+                    questTarget = null
+                    questCooldownUntil = now + Random.nextInt(500, 1500)
+                    state = State.ADVENTURE
+                    return
+                }
+                if (counter++ >= 600) {
+                    // Took too long to get there — give up quietly
+                    questTarget = null
+                    questCooldownUntil = getWorldTicks() + Random.nextInt(500, 1500)
+                    state = State.ADVENTURE
+                    return
+                }
+                if (bot.location.withinDistance(target.loc, 8)) {
+                    state = State.QUEST_TALK
+                    questTalkUntil = getWorldTicks() + Random.nextInt(15, 40)
+                    questInteracted = false
+                } else {
+                    scriptAPI.walkTo(target.loc)
+                }
+                return
+            }
+
+            State.QUEST_TALK -> {
+                tickQuestTalk()
+                return
+            }
+
             State.WALKING_PATH -> {
-                // Bot is walking a defined route between cities via walkArray
-                if (walkingDestination != null && bot.location.withinDistance(walkingDestination!!, 10)) {
+                // Segment-by-segment trek between cities so bots can make scenic stops
+                val destination = walkingDestination
+                val route = trekRoute
+                if (destination == null || route == null) {
+                    state = State.TELEPORTING
+                    return
+                }
+                if (bot.location.withinDistance(destination, 10)) {
                     // Arrived at destination
-                    city = walkingDestination!!
+                    city = destination
                     walkingDestination = null
+                    trekRoute = null
                     counter = 0
                     ticks = 0
                     state = State.ADVENTURE
                     return
                 }
-                // Safety timeout — if walking takes too long, bail out
-                if (counter++ >= 500) {
+                // Per-segment safety timeout — resets whenever we reach a waypoint.
+                // Kept at/under the BotScriptPulse stale-interaction window so even a
+                // wedged walker gets exactly one granted tick to bail out to TELEPORTING.
+                if (counter++ >= 300) {
                     walkingDestination = null
+                    trekRoute = null
                     state = State.TELEPORTING
+                    return
                 }
+                if (trekIndex < route.size - 1 && bot.location.withinDistance(route[trekIndex], 6)) {
+                    trekIndex++
+                    counter = 0
+                }
+                val waypoint = route[trekIndex.coerceAtMost(route.size - 1)]
+
+                if (!bot.walkingQueue.isMoving) {
+                    val stopRoll = randomNumberFromOne(1000)
+                    when {
+                        // Short gathering detour when a tree/rocks sit near the road
+                        stopRoll < 60 -> {
+                            val list = if (Random.nextBoolean()) treeResources else rockResources
+                            if (scriptAPI.getNearestNodeFromList(list, true) != null) {
+                                startGathering(Random.nextInt(30, 90), resumeTrek = true)
+                                return
+                            }
+                        }
+                        // Wander a few tiles off the road to look around
+                        stopRoll < 120 -> {
+                            scriptAPI.randomWalkTo(bot.location, Random.nextInt(3, 8))
+                            return
+                        }
+                        // Emote/face/chat idle behavior
+                        stopRoll < 160 -> {
+                            performIdleBehavior()
+                            return
+                        }
+                    }
+                }
+                scriptAPI.walkTo(waypoint)
                 return
             }
 
@@ -740,10 +1209,8 @@ class Adventurer(val style: CombatStyle): Script() {
                 } else {
                     if (bot.location.withinDistance(bank.location, 5)) {
                         // We reached the bank! Secretly re-gear
-                        val assembler = CombatBotAssembler()
-                        bot = assembler.produce(type, CombatBotAssembler.Tier.MED, bot.startLocation)!! // Give fresh MED gear
-                        bot.inventory.add(Item(385, 10)) // Fresh sharks
-                        
+                        regearAtBank()
+
                         counter = 0
                         ticks = 0
                         state = State.START
@@ -751,13 +1218,11 @@ class Adventurer(val style: CombatStyle): Script() {
                         scriptAPI.randomWalkTo(bank.location, 1)
                     }
                 }
-                
+
                 if (counter++ >= 500) {
                     // Failsafe — if we can't path to a bank, just cheat gear in and teleport
-                    val assembler = CombatBotAssembler()
-                    bot = assembler.produce(type, CombatBotAssembler.Tier.MED, bot.startLocation)!!
-                    bot.inventory.add(Item(385, 10))
-                    
+                    regearAtBank()
+
                     counter = 0
                     state = State.TELEPORTING
                 }
@@ -766,6 +1231,38 @@ class Adventurer(val style: CombatStyle): Script() {
 
         }
 
+    }
+
+    /**
+     * Re-gears the existing bot body with fresh MED combat gear and a restocked
+     * inventory (tools + sharks). This used to swap in a brand-new bot via
+     * CombatBotAssembler.produce(), which self-registers a second AIPlayer in
+     * the world (leaving this body behind as an orphaned ghost) and silently
+     * desynced scriptAPI, whose private bot reference kept pointing at the old
+     * entity — after one death recovery every scriptAPI.eat/withdraw/getNearestNode
+     * call acted on a corpse. Re-gearing in place keeps the script, the
+     * scriptAPI and the registered world entity the same object.
+     */
+    private fun regearAtBank() {
+        // The assembler's stat/gear helpers take AIPlayer; RECOVER_BANK only ever
+        // runs for artificial bodies, so this cast is safe. A no-op for the
+        // (impossible here) player-controlled case keeps it defensive anyway.
+        val aiBot = bot as? AIPlayer ?: return
+        val assembler = CombatBotAssembler()
+        aiBot.equipment.clear()
+        when (type) {
+            CombatBotAssembler.Type.RANGE -> {
+                assembler.generateStats(aiBot, CombatBotAssembler.Tier.MED, Skills.RANGE, Skills.DEFENCE)
+                assembler.gearRangedBot(aiBot)
+            }
+            else -> {
+                assembler.generateStats(aiBot, CombatBotAssembler.Tier.MED, Skills.ATTACK, Skills.STRENGTH, Skills.DEFENCE)
+                assembler.gearMeleeBot(aiBot)
+            }
+        }
+        bot.inventory.clear()
+        for (item in inventory) bot.inventory.add(item)
+        bot.fullRestore()
     }
 
     fun dialogue() {
@@ -804,22 +1301,22 @@ class Adventurer(val style: CombatStyle): Script() {
             val localPlayer = localPlayers
                 .filter { it.name != bot.name }
                 .randomOrNull()
-            if (localPlayer != null) {
-                val chat = if (lineAlt.isNotEmpty() && Random.nextBoolean()) { lineAlt } else { lineStd }
-                    .replace("@name", localPlayer.username)
-                    .replace("@timer", until.toString())
-                scriptAPI.sendChat(chat)
-            } else {
-                val chat = if (lineAlt.isNotEmpty() && Random.nextBoolean()) { lineAlt } else { lineStd }
-                scriptAPI.sendChat(chat)
-            }
+            val raw = if (lineAlt.isNotEmpty() && Random.nextBoolean()) { lineAlt } else { lineStd }
+            val chat = resolveLine(raw, localPlayer?.username)
+            scriptAPI.sendChat(chat)
+            // One-off lines can draw up to two replies from other bots
+            registerUtterance(bot.username, raw, maxClaims = 2)
         }
     }
 
     enum class State{
         START,
         ADVENTURE,
+        CONVERSATION,
         WALKING_PATH,
+        GATHERING,
+        QUEST_TRAVEL,
+        QUEST_TALK,
         FIND_BANK,
         FIND_CITY,
         IDLE_GE,
@@ -1002,6 +1499,23 @@ class Adventurer(val style: CombatStyle): Script() {
             Triple(ardougne, yanille, arrayOf(
                 Location(2650, 3270, 0), Location(2635, 3200, 0),
                 Location(2620, 3150, 0)
+            )),
+            // Draynor -> Varrock (northeast along the back road)
+            Triple(draynor, varrock, arrayOf(
+                Location(3105, 3265, 0), Location(3130, 3280, 0),
+                Location(3155, 3320, 0), Location(3185, 3370, 0),
+                Location(3205, 3400, 0)
+            )),
+            // Varrock -> Falador (west through Barbarian Village)
+            Triple(varrock, falador, arrayOf(
+                Location(3175, 3430, 0), Location(3110, 3420, 0),
+                Location(3040, 3395, 0), Location(3000, 3385, 0)
+            )),
+            // Al Kharid -> Varrock (north road past the mine)
+            Triple(alkharid, varrock, arrayOf(
+                Location(3285, 3225, 0), Location(3270, 3260, 0),
+                Location(3250, 3290, 0), Location(3230, 3320, 0),
+                Location(3220, 3360, 0)
             ))
         )
 
@@ -1088,6 +1602,33 @@ class Adventurer(val style: CombatStyle): Script() {
         val dialogue: JSONObject
         val dateCode: Int
 
+        // Multi-turn conversation scripts: topic -> turns -> line pool (populated in init)
+        val conversationTopics: Map<String, Array<Array<String>>>
+        val replyCategories: List<ReplyCategory>
+        val questArrivalLines: List<String>
+        val questDoneLines: List<String>
+
+        // Fake quest trip targets: classic quest-start NPCs on ground floors near roads
+        val questNpcs = listOf(
+            QuestTarget("cooks assistant", "Cook", Location.create(3209, 3215, 0)),
+            QuestTarget("sheep shearer", "Fred the Farmer", Location.create(3189, 3273, 0)),
+            QuestTarget("dorics quest", "Doric", Location.create(2953, 3450, 0)),
+            QuestTarget("romeo and juliet", "Romeo", Location.create(3211, 3425, 0)),
+            QuestTarget("rune mysteries", "Aubury", Location.create(3253, 3403, 0))
+        )
+
+        // Cross-bot chat registry feeding the reply system; mutated only on the game thread,
+        // synchronized anyway so TelemetryServer-driven spawns can never race it.
+        private val recentUtterances = ArrayDeque<Utterance>()
+
+        // Live GE prices from the CDN snapshot GEPriceSync persists (loaded off-thread)
+        @Volatile private var cdnPrices: Map<Int, Int>? = null
+        @Volatile private var cdnPriceFileStamp: Long = 0
+        @Volatile private var cdnPriceLastAttemptMs: Long = 0
+        private val cdnPriceLock = Any()
+        private val pricePlaceholder = Regex("@price\\((\\d+)\\)")
+        private val itemPlaceholder = Regex("@item\\((\\d+)\\)")
+
         init {
             val reader = FileReader(ServerConstants.BOT_DATA_PATH + File.separator + "bot_dialogue.json")
             val parser = org.json.simple.parser.JSONParser()
@@ -1099,6 +1640,150 @@ class Adventurer(val style: CombatStyle): Script() {
             val current = LocalDateTime.now()
             val formatted: String = current.format(formatter)
             dateCode = formatted.toInt()
+
+            // Conversations: topic -> array of turns -> pool of lines per turn
+            val convRoot = data["conversations"] as JSONObject
+            val topics = LinkedHashMap<String, Array<Array<String>>>()
+            for ((topic, turnsValue) in convRoot) {
+                val turnsArr = turnsValue as JSONArray
+                val turns = Array(turnsArr.size) { i ->
+                    val pool = turnsArr[i] as JSONArray
+                    Array(pool.size) { j -> pool[j] as String }
+                }
+                topics[topic as String] = turns
+            }
+            conversationTopics = topics
+
+            // Reply pools, ordered by precedence with "generic" last
+            replyCategories = (data["replies"] as JSONArray).map { e ->
+                val o = e as JSONObject
+                ReplyCategory(
+                    name = o["name"] as String,
+                    keywords = (o["keywords"] as JSONArray).map { it as String },
+                    lines = (o["lines"] as JSONArray).map { it as String }
+                )
+            }
+
+            // Quest trip chatter
+            val questLines = data["quest_lines"] as JSONObject
+            questArrivalLines = (questLines["arrival"] as JSONArray).map { it as String }
+            questDoneLines = (questLines["done"] as JSONArray).map { it as String }
+
+            // Warm the GE price snapshot cache in the background
+            ensureGePricesLoaded()
+        }
+
+        /** Records a chat line so nearby bots can (claim to) reply to it. */
+        fun registerUtterance(speaker: String, line: String, maxClaims: Int) {
+            val now = getWorldTicks()
+            synchronized(recentUtterances) {
+                while (recentUtterances.isNotEmpty() && now - recentUtterances.first().tick > 60) {
+                    recentUtterances.removeFirst()
+                }
+                while (recentUtterances.size >= 256) {
+                    recentUtterances.removeFirst()
+                }
+                recentUtterances.addLast(Utterance(speaker, line, now, maxClaims))
+            }
+        }
+
+        /**
+         * Finds a recent utterance from another bot that still has claims left,
+         * keyword-matches it to a reply pool, and atomically claims it so at
+         * most 1-2 bots ever respond to the same line.
+         */
+        private fun findAndClaimUtterance(responder: String): Pair<Utterance, ReplyCategory>? {
+            val now = getWorldTicks()
+            synchronized(recentUtterances) {
+                for (i in recentUtterances.indices.reversed()) {
+                    val u = recentUtterances[i]
+                    if (now - u.tick > 60) break
+                    if (u.speaker == responder || u.claims >= u.maxClaims) continue
+                    val category = matchReplyCategory(u.line)
+                    if (category != null) {
+                        u.claims++
+                        return u to category
+                    }
+                }
+            }
+            return null
+        }
+
+        private fun matchReplyCategory(line: String): ReplyCategory? {
+            val lower = line.lowercase()
+            for (cat in replyCategories) {
+                if (cat.keywords.isNotEmpty() && cat.keywords.any { lower.contains(it) }) return cat
+            }
+            // No keyword hit — occasionally fall back to a generic acknowledgment
+            return if (Random.nextInt(100) < 30) replyCategories.last() else null
+        }
+
+        /** Resolves @name/@timer mentions and @price(id)/@item(id) GE placeholders. */
+        fun resolveLine(line: String, nameForMentions: String?): String {
+            var out = line
+            if (nameForMentions != null) out = out.replace("@name", nameForMentions)
+            out = out.replace("@timer", (1225 - dateCode).toString())
+            out = pricePlaceholder.replace(out) { m ->
+                formatGp((gePriceFor(m.groupValues[1].toInt()) ?: 0).toLong())
+            }
+            out = itemPlaceholder.replace(out) { m ->
+                ItemDefinition.forId(m.groupValues[1].toInt()).name.lowercase()
+            }
+            return out
+        }
+
+        /** CDN snapshot first (same data the GE syncs from), item definition price as fallback. */
+        fun gePriceFor(id: Int): Int? {
+            ensureGePricesLoaded()
+            cdnPrices?.get(id)?.let { return it }
+            val def = ItemDefinition.forId(id)
+            return def.grandExchangePrice.takeIf { it > 0 }
+        }
+
+        /** Formats prices the way players type them: 1.5m, 230k, 9gp. */
+        fun formatGp(value: Long): String = when {
+            value >= 1_000_000L -> String.format(Locale.US, "%.1fm", value / 1_000_000.0)
+            value >= 1_000L -> "${value / 1_000}k"
+            else -> "${value}gp"
+        }
+
+        /**
+         * Loads <GRAND_EXCHANGE_DATA_PATH>/latest.json (saved by GEPriceSync) into memory
+         * on a background thread. Reloads lazily when the file is rewritten; at most one
+         * attempt per minute so a missing/corrupt file never spawns a thread storm.
+         */
+        private fun ensureGePricesLoaded() {
+            try {
+                val file = File(ServerConstants.GRAND_EXCHANGE_DATA_PATH, "latest.json")
+                if (!file.exists()) return
+                val stamp = file.lastModified()
+                if (stamp <= cdnPriceFileStamp) return
+                if (System.currentTimeMillis() - cdnPriceLastAttemptMs < 60_000) return
+                synchronized(cdnPriceLock) {
+                    if (stamp <= cdnPriceFileStamp) return
+                    if (System.currentTimeMillis() - cdnPriceLastAttemptMs < 60_000) return
+                    cdnPriceLastAttemptMs = System.currentTimeMillis()
+                    Thread({
+                        try {
+                            val arr = org.json.simple.parser.JSONParser().parse(FileReader(file)) as JSONArray
+                            val parsed = HashMap<Int, Int>(arr.size)
+                            for (e in arr) {
+                                val o = e as JSONObject
+                                val id = (o["item_id"] as Number).toInt()
+                                val value = (o["value"] as Number).toInt()
+                                if (value > 0) parsed[id] = value
+                            }
+                            cdnPrices = parsed
+                            cdnPriceFileStamp = stamp
+                            log(this::class.java, Log.FINE, "Adventurer loaded ${parsed.size} GE prices from CDN snapshot.")
+                        } catch (e: Exception) {
+                            log(this::class.java, Log.FINE, "Adventurer failed to parse GE price snapshot: ${e.message}")
+                        }
+                    }, "Adventurer-GE-Prices").start()
+                }
+            } catch (e: Exception) {
+                // Price chatter is cosmetic — never let it disturb bot ticking
+            }
         }
 
         private fun JSONObject.getLines(category: String): JSONArray {
@@ -1109,4 +1794,32 @@ class Adventurer(val style: CombatStyle): Script() {
             return this.random() as String
         }
     }
+}
+
+/**
+ * A two-bot scripted conversation. Shared by reference between the participants;
+ * only [initiator] advances turns (from its own tick), both sides can abort it.
+ */
+class Conversation(
+    val initiator: Adventurer,
+    val partner: Adventurer,
+    val topic: String,
+    val turns: Array<Array<String>>,
+    var turnIndex: Int = 0,
+    var nextTurnTick: Int = 0,
+    var lastProgressTick: Int = 0
+)
+
+/** A reply queued against another bot's recent utterance, fired after a short delay. */
+class PendingReply(val dueTick: Int, val line: String)
+
+/** A quest-start NPC bots pretend to visit for quest trips. */
+class QuestTarget(val questName: String, val npcName: String, val loc: Location)
+
+/** One keyword-matched reply pool from bot_dialogue.json. */
+class ReplyCategory(val name: String, val keywords: List<String>, val lines: List<String>)
+
+/** A chat line registered for cross-bot replies; claims cap how many bots may respond. */
+class Utterance(val speaker: String, val line: String, val tick: Int, val maxClaims: Int) {
+    var claims: Int = 0
 }

@@ -182,16 +182,9 @@ class LobsterCatcher : Script() {
     }
 
     override fun newInstance(): Script {
-        if (!lobstopper && bots <= 0) {
-            val script = LobsterCatcher()
-            script.bot = AIPlayer(bot.startLocation)
-            script.state = State.FIND_SPOT
-            bots = 1
-            return script
-        }else if (tick++ == 6000 && lobstopper) {
-            tick = 0
-            lobstopper = false
-        }
-        return newInstance()
+        val script = LobsterCatcher()
+        script.bot = AIPlayer(bot.startLocation)
+        script.state = State.FIND_SPOT
+        return script
     }
 }

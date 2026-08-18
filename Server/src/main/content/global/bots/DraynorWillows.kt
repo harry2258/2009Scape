@@ -81,6 +81,7 @@ class DraynorWillows : Script(){
 
     override fun newInstance(): Script {
         val script = DraynorWillows()
+        script.bot = SkillingBotAssembler().produce(SkillingBotAssembler.Wealth.values().random(), bot.startLocation)
         return script
     }
 

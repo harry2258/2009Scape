@@ -2,7 +2,6 @@ package content.region.misthalin.lumbridge.quest.lostcity
 
 import core.api.Event
 import core.api.LoginListener
-import core.api.clearScripts
 import core.api.getQuestStage
 import core.game.event.EventHook
 import core.game.event.InteractionEvent

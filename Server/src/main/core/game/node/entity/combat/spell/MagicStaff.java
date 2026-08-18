@@ -12,7 +12,7 @@ public enum MagicStaff {
 	/**
 	 * Represents the fire rune staves.
 	 */
-	FIRE_RUNE(554, 1387, 1393, 1401, 3053, 3054, 3055, 3056, 11736, 11738),
+	FIRE_RUNE(554, 1387, 1393, 1401, 3053, 3054, 3055, 3056, 11736, 11738, 14659, 14661),
 
 	/**
 	 * Represents the water rune staves.
@@ -22,12 +22,12 @@ public enum MagicStaff {
 	/**
 	 * Represents the air rune staves.
 	 */
-	AIR_RUNE(556, 1381, 1397, 1405, 21777),
+	AIR_RUNE(556, 1381, 1397, 1405, 21777, 14659, 14661, 14663, 14665),
 
 	/**
 	 * Represents the earth rune staves.
 	 */
-	EARTH_RUNE(557, 3053, 3054, 3055, 3056, 1385, 1399, 1407, 557, 6563, 6562);
+	EARTH_RUNE(557, 3053, 3054, 3055, 3056, 1385, 1399, 1407, 557, 6563, 6562, 14663, 14665);
 
 	/**
 	 * The magic staves mapping.

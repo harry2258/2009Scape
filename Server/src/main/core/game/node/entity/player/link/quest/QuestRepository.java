@@ -14,7 +14,6 @@ import java.util.Map;
 import static core.api.ContentAPIKt.log;
 import static core.api.ContentAPIKt.*;
 
-
 /**
  * Manages the systems/players quest repository.
  *
@@ -54,12 +53,12 @@ public final class QuestRepository {
         }
     }
 
-    public void parse(JSONObject questData){
-        points = Integer.parseInt( questData.get("points").toString());
+    public void parse(JSONObject questData) {
+        points = Integer.parseInt(questData.get("points").toString());
         JSONArray questArray = (JSONArray) questData.get("questStages");
         questArray.forEach(quest -> {
             JSONObject q = (JSONObject) quest;
-            quests.put(Integer.parseInt( q.get("questId").toString()),Integer.parseInt(q.get("questStage").toString()));
+            quests.put(Integer.parseInt(q.get("questId").toString()), Integer.parseInt(q.get("questStage").toString()));
         });
         syncPoints();
     }
@@ -72,8 +71,8 @@ public final class QuestRepository {
     public void syncronizeTab(Player player) {
         setVarp(player, 101, points);
         int[] config = null;
-        for(Quest quest : QUESTS.values()){
-            config = quest.getConfig(player,getStage(quest));
+        for (Quest quest : QUESTS.values()) {
+            config = quest.getConfig(player, getStage(quest));
 
             // {questVarpId, questVarbitId, valueToSet}
             if (config.length == 3) {
@@ -84,6 +83,9 @@ public final class QuestRepository {
                 // {questVarpId, valueToSet}
                 setVarp(player, config[0], config[1]);
             }
+
+            // [QuestHelper Patch]: Broadcast unadulterated stage to a free Custom Varp
+            setVarp(player, 3000 + quest.getIndex(), getStage(quest));
 
             quest.updateVarps(player);
         }
@@ -97,10 +99,13 @@ public final class QuestRepository {
      */
     public void setStage(Quest quest, int stage) {
         int oldStage = getStage(quest);
-        if(oldStage < stage) {
+        if (oldStage < stage) {
             quests.put(quest.getIndex(), stage);
+            setVarp(player, 3000 + quest.getIndex(), stage);
         } else {
-            log(this.getClass(), Log.WARN,  String.format("Nonmonotonic QuestRepository.setStage call for player \"%s\", quest \"%s\", old stage %d, new stage %d", player.getName(), quest.getQuest(), oldStage, stage));
+            log(this.getClass(), Log.WARN, String.format(
+                    "Nonmonotonic QuestRepository.setStage call for player \"%s\", quest \"%s\", old stage %d, new stage %d",
+                    player.getName(), quest.getQuest(), oldStage, stage));
         }
     }
 
@@ -128,7 +133,9 @@ public final class QuestRepository {
      *
      * @param value the value.
      */
-    public void dockPoints(int value) { points -= value; }
+    public void dockPoints(int value) {
+        points -= value;
+    }
 
     /**
      * Syncronizes the quest points.
@@ -204,7 +211,7 @@ public final class QuestRepository {
     public boolean isComplete(Quests quest) {
         Quest theQuest = getQuest(quest);
         if (theQuest == null) {
-            log(this.getClass(), Log.ERR,  "Error can't check if quest is complete for " + quest);
+            log(this.getClass(), Log.ERR, "Error can't check if quest is complete for " + quest);
             return false;
         }
         return theQuest.getStage(player) >= 100;
@@ -219,15 +226,15 @@ public final class QuestRepository {
     public boolean hasStarted(Quests quest) {
         Quest theQuest = getQuest(quest);
         if (quest == null) {
-            log(this.getClass(), Log.ERR,  "Error can't check if quest is complete for " + quest);
+            log(this.getClass(), Log.ERR, "Error can't check if quest is complete for " + quest);
             return false;
         }
         return theQuest.getStage(player) > 0;
     }
 
-
     /**
      * Gets the stage of quest by id.
+     * 
      * @param quest The quest.
      * @return The stage.
      */
@@ -241,6 +248,7 @@ public final class QuestRepository {
 
     /**
      * Gets the stage of a quest.
+     * 
      * @param quest The quest.
      * @return The stage.
      */
@@ -250,6 +258,7 @@ public final class QuestRepository {
 
     /**
      * Gets the quest by id.
+     * 
      * @param quest The quest.
      * @return The quest.
      */
@@ -293,6 +302,8 @@ public final class QuestRepository {
         return QUESTS;
     }
 
-    public Map<Integer, Integer> getQuestList() {return quests;}
+    public Map<Integer, Integer> getQuestList() {
+        return quests;
+    }
 
 }

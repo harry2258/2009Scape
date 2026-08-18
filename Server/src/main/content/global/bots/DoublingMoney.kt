@@ -340,8 +340,8 @@ class DoublingMoney : Script() {
     }
 
     override fun newInstance(): Script? {
-        // this straight doesn't get called....
-        return null
+        // Spawned exclusively via ImmerseWorld.spawnDoubleMoneyBot — newInstance is dead per Script.java.
+        return this
     }
 
     init {
@@ -350,21 +350,28 @@ class DoublingMoney : Script() {
     }
 
     companion object {
-        val startingLocs = arrayOf(Location.create(3184, 3488, 0),
-            Location.create(3167, 3461, 0),
-            Location.create(3170, 3444, 0),
-            Location.create(3165, 3487, 0),
-            Location.create(3167, 3489, 0),
-            Location.create(3162, 3491, 0))
+        val startingLocs = arrayOf(
+            Location.create(3150, 3476, 0),
+            Location.create(3153, 3499, 0),
+            Location.create(3161, 3468, 0),
+            Location.create(3172, 3470, 0),
+            Location.create(3180, 3480, 0),
+            Location.create(3178, 3496, 0),
+            Location.create(3169, 3504, 0),
+            Location.create(3158, 3504, 0)
+        )
 
-        val doublingLocs = arrayOf(Location.create(3159, 3492, 0),
-            Location.create(3164, 3484, 0),
-            Location.create(3169, 3486, 0),
-            Location.create(3172, 3489, 0),
-            Location.create(3168, 3483, 0),
-            Location.create(3166, 3493, 0),
-            Location.create(3157, 3498, 0),
-            Location.create(3157, 3485, 0)
+        val doublingLocs = arrayOf(
+            Location.create(3151, 3478, 0),
+            Location.create(3154, 3497, 0),
+            Location.create(3159, 3504, 0),
+            Location.create(3168, 3504, 0),
+            Location.create(3178, 3495, 0),
+            Location.create(3180, 3483, 0),
+            Location.create(3176, 3473, 0),
+            Location.create(3169, 3469, 0),
+            Location.create(3160, 3468, 0),
+            Location.create(3153, 3471, 0)
         )
 
         // load from data/botdata/ge_bot_appearances_and_equipment.json

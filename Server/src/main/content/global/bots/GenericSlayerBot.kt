@@ -11,6 +11,7 @@ import core.tools.RandomFunction
 import org.rs09.consts.Items
 import core.game.bots.AIRepository
 import core.game.bots.Script
+import core.game.bots.CombatBotAssembler
 
 /**
  * A bot that does various random slayer tasks throughout the game and sells the loot on the GE.
@@ -186,7 +187,13 @@ class GenericSlayerBot : Script() {
      * Called when a bot needs to be regenerated, like when a bot dies.
      */
     override fun newInstance(): Script {
-        TODO("Not yet implemented")
+        val script = GenericSlayerBot()
+        script.bot = CombatBotAssembler().produce(
+            CombatBotAssembler.Type.MELEE,
+            CombatBotAssembler.Tier.HIGH,
+            bot.startLocation
+        )
+        return script
     }
 
     /**

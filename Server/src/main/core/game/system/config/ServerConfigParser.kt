@@ -175,6 +175,13 @@ object ServerConfigParser {
         ServerConstants.CONNECTIVITY_CHECK_URL = data.getString("server.connectivity_check_url", "https://google.com,https://2009scape.org")
         ServerConstants.CONNECTIVITY_TIMEOUT = data.getLong("server.connectivity_timeout", 500L).toInt()
 
+        // Lootbeam QoL settings
+        ServerConstants.LOOTBEAM_ENABLED = data.getBoolean("qol.lootbeam_enabled", true)
+        ServerConstants.LOOTBEAM_VALUE_THRESHOLD = data.getLong("qol.lootbeam_value_threshold", 50_000L).toInt()
+        ServerConstants.LOOTBEAM_GRAPHIC_ID = data.getLong("qol.lootbeam_graphic_id", 65L).toInt()
+        ServerConstants.LOOTBEAM_PULSE_TICKS = data.getLong("qol.lootbeam_pulse_ticks", 2L).toInt()
+        ServerConstants.LOOTBEAM_PULSE_MAX_TICKS = data.getLong("qol.lootbeam_pulse_max_ticks", 60L).toInt()
+
         val logLevel = data.getString("server.log_level", "VERBOSE").uppercase()
         ServerConstants.LOG_LEVEL = parseEnumEntry<LogLevel>(logLevel) ?: LogLevel.VERBOSE
     }

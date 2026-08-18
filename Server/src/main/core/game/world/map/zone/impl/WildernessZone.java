@@ -37,9 +37,13 @@ public final class WildernessZone extends MapZone {
 	private static int[] PVP_GEAR = { 13887, 13893, 13899, 13905, 13870, 13873, 13876, 13879, 13883, 13884, 13890, 13896, 13902, 13858, 13861, 13864, 13867};
 
 	/**
-	 * The wilderness zone.
+	 * The wilderness zone. Starts at y=3523 — the ditch-jump landing row — so the
+	 * 2-tile fringe between the ditch and the old y=3525 border is inside the
+	 * zone. Bots pathing through that fringe used to get leave()d (Attack option
+	 * removed, wilderness flag cleared), making them un-attackable, and players
+	 * standing there had no Attack option at all.
 	 */
-	private static final WildernessZone INSTANCE = new WildernessZone(new ZoneBorders(2944, 3525, 3400, 3975), new ZoneBorders(3070, 9924, 3135, 10002), ZoneBorders.forRegion(12192), ZoneBorders.forRegion(12193), ZoneBorders.forRegion(11937));
+	private static final WildernessZone INSTANCE = new WildernessZone(new ZoneBorders(2944, 3523, 3400, 3975), new ZoneBorders(3070, 9924, 3135, 10002), ZoneBorders.forRegion(12192), ZoneBorders.forRegion(12193), ZoneBorders.forRegion(11937));
 
 	public static final String WILDERNESS_PROT_ATTR = "/save:wilderness-protection-active";
 	public static final String WILDERNESS_HIGHER_NEXTFEE = "/save:wilderness-higher-next-fee";
@@ -152,6 +156,14 @@ public final class WildernessZone extends MapZone {
 			if(!p.isArtificial()) {
 				show(p);
 			} else {
+				// Bots never run show() (nothing to send packets to), but they still
+				// need the Attack option on their interaction list: the attack packet
+				// resolves the clicked option from the VICTIM's list, so without this
+				// a player right-clicking "Attack" on a bot gets a silent no-op
+				// (PacketProcessor.processPlayerAction finds slot 0 null).
+				if (GameWorld.getSettings().getWild_pvp_enabled()) {
+					p.getInteraction().set(Option._P_ATTACK);
+				}
 				p.getSkullManager().setWilderness(true);
 				p.getSkullManager().setLevel(getWilderness(p));
 			}

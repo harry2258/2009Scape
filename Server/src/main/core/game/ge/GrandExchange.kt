@@ -11,8 +11,8 @@ import core.game.world.GameWorld
 import core.game.world.repository.Repository
 import core.tools.Log
 import core.tools.SystemLogger
-import java.lang.Integer.max
 import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.ThreadLocalRandom
 
 /**
  * Handles the exchanging of offers, offer update thread, etc.
@@ -24,28 +24,46 @@ class GrandExchange : StartupListener, Commands {
      * Fallback safety check to make sure we don't start the GE twice under any circumstance
      */
     var isRunning = false
-
     /**
      * Initializes the offer manager and spawns an update thread.
-     * @param local whether or not the GE should be the local in-code server rather than some hypothetical remote implementation.
      */
+
+
     fun boot(){
         if(isRunning) return
 
         SystemLogger.logGE("Initializing GE Update Worker")
+        getValidOffers()
+            .asSequence()
+            .filter { !it.isBot && it.offerState == OfferState.REGISTERED && it.amountLeft > 0 }
+            .forEach { pendingOffers.addLast(it) }
 
         Thread {
             Thread.currentThread().name = "GE Update Worker"
             while(true) {
                 var offer = pendingOffers.takeFirst()
-                offer.writeNew()
+                if (offer.uid == 0L) {
+                    // Only persist brand-new offers once; existing offers must keep their original UID/state.
+                    offer.writeNew()
+                }
+                if (offer.uid <= 0L) {
+                    // Bot stock offers use uid=0 and are not tracked in player_offers.
+                    continue
+                }
                 offer = getOfferByUid(offer.uid) ?: continue
                 selectPotentialMatches(offer).asSequence()
                     .sortedBy { if (offer.sell) -it.offeredValue else it.offeredValue }
                     .filter { if (offer.sell) it.offeredValue >= offer.offeredValue else it.offeredValue <= offer.offeredValue }
                     .forEach { match -> exchange(offer, match) }
-                if (!offer.isBot && offer.amountLeft > 0 && !offer.sell)
-                    tryExchangeWithBots(offer)
+                if (!offer.isBot && offer.amountLeft > 0) {
+                    if (!offer.sell) {
+                        tryExchangeWithBots(offer)
+                    }
+                    tryDynamicAutoFill(offer, null)
+                    if (offer.amountLeft > 0 && offer.offerState == OfferState.REGISTERED) {
+                        scheduleOfferRetry(offer.uid)
+                    }
+                }
             }
         }.start()
 
@@ -101,10 +119,241 @@ class GrandExchange : StartupListener, Commands {
     }
 
     companion object {
+        private val scheduledRetryOffers = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+
         val pendingOffers = LinkedBlockingDeque<GrandExchangeOffer>()
-        private val GET_SPECIFIC_OFFER_BY_UID = "SELECT * FROM player_offers WHERE uid = ?;"
-        private val GET_MATCHES_FROM_PLAYER_OFFERS = "SELECT * FROM player_offers WHERE item_id = ? AND is_sale = ? AND offer_state < 4 AND NOT offer_state = 2;"
-        private val GET_MATCH_FROM_BOT_OFFERS = "SELECT * FROM bot_offers WHERE item_id = ?;"
+        private const val ACTIVE_OFFER_STATE = 1 // OfferState.REGISTERED
+        private const val GET_SPECIFIC_OFFER_BY_UID = "SELECT * FROM player_offers WHERE uid = ?;"
+        private const val GET_MATCHES_FROM_PLAYER_OFFERS = "SELECT * FROM player_offers WHERE item_id = ? AND is_sale = ? AND offer_state = $ACTIVE_OFFER_STATE;"
+        private const val GET_MATCH_FROM_BOT_OFFERS = "SELECT * FROM bot_offers WHERE item_id = ?;"
+        // Retry cadence for unfinished offers. Higher values = slower market updates.
+        private const val RETRY_MIN_TICKS = 20
+        private const val RETRY_MAX_TICKS_EXCLUSIVE = 61
+        // Order size penalty. Lower divisor / higher max = large stacks fill slower.
+        private const val ORDER_SIZE_PENALTY_DIVISOR = 350.0
+        private const val ORDER_SIZE_PENALTY_MAX = 0.45
+        // Global fill chance clamps after all factors are applied.
+        private const val FILL_CHANCE_MIN = 0.05
+        private const val FILL_CHANCE_MAX = 0.70
+        // Hard price bands for bot autofill eligibility.
+        private const val SELL_AUTOFILL_MAX_RATIO = 1.20
+        private const val BUY_AUTOFILL_MIN_RATIO = 0.85
+        private const val LOW_FILL_WARNING_THRESHOLD = 0.06
+        // Sell quantity shaping: small sell stacks get a bonus; very large stacks get a penalty.
+        private const val SELL_SMALL_STACK_BONUS_THRESHOLD = 100.0
+        private const val SELL_SMALL_STACK_BONUS_MAX = 0.25
+        private const val SELL_LARGE_STACK_PENALTY_START = 250.0
+        private const val SELL_LARGE_STACK_PENALTY_DIVISOR = 1200.0
+        private const val SELL_LARGE_STACK_PENALTY_MAX = 0.25
+        // Sell value shaping: cheap items move faster, expensive items move slower.
+        private const val SELL_LOW_VALUE_THRESHOLD = 200.0
+        private const val SELL_LOW_VALUE_BONUS_MAX = 0.15
+        private const val SELL_HIGH_VALUE_START = 5000.0
+        private const val SELL_HIGH_VALUE_PENALTY_SCALE = 50000.0
+        private const val SELL_HIGH_VALUE_PENALTY_MAX = 0.20
+        // Buy overpay shaping: paying above guide gives a direct fill-speed boost.
+        private const val BUY_OVERPAY_BOOST_FULL_PERCENT = 0.20
+        private const val BUY_OVERPAY_BOOST_MAX = 0.20
+        // Sell underprice shaping: selling below guide gives a direct fill-speed boost.
+        private const val SELL_UNDERPRICE_BOOST_FULL_PERCENT = 0.20
+        private const val SELL_UNDERPRICE_BOOST_MAX = 0.20
+        // Protection for "good" prices: sell <= guide, buy >= guide.
+        private const val FAVORABLE_FILL_CHANCE_FLOOR = 0.40
+        // Random market noise range per attempt.
+        private const val VOLATILITY_MIN = -0.08
+        private const val VOLATILITY_MAX = 0.06
+        // Partial-fill depth. Lower values = more trickle fills.
+        private const val PARTIAL_FILL_MIN = 0.03
+        private const val PARTIAL_FILL_BASE_MAX = 0.12
+        private const val PARTIAL_FILL_FROM_CHANCE_MULTIPLIER = 0.40
+        private const val PARTIAL_FILL_MAX_CAP = 0.55
+        // Per-fill lot sizing. Keeps large stacks from clearing unrealistically fast.
+        private const val MIN_FILL_UNITS = 2
+        private const val BASE_FILL_UNITS = 8
+        private const val FILL_UNITS_PER_SQRT = 2.0
+        private const val MAX_FILL_UNITS_CAP = 120
+        // Delay before a successful auto-fill settles. Higher = slower perceived execution.
+        private const val SETTLEMENT_MIN_TICKS = 8
+        private const val SETTLEMENT_MAX_TICKS_EXCLUSIVE = 46
+
+        private fun scheduleOfferRetry(uid: Long) {
+            if (uid <= 0L || !scheduledRetryOffers.add(uid)) {
+                return
+            }
+            val delayTicks = ThreadLocalRandom.current().nextInt(RETRY_MIN_TICKS, RETRY_MAX_TICKS_EXCLUSIVE)
+            GameWorld.Pulser.submit(object : Pulse(delayTicks) {
+                override fun pulse(): Boolean {
+                    try {
+                        val offer = getOfferByUid(uid) ?: return true
+                        if (!offer.isBot && offer.offerState == OfferState.REGISTERED && offer.amountLeft > 0) {
+                            pendingOffers.addLast(offer)
+                        }
+                    } finally {
+                        scheduledRetryOffers.remove(uid)
+                    }
+                    return true
+                }
+            })
+        }
+
+        private fun tryDynamicAutoFill(offer: GrandExchangeOffer, player: Player?): Boolean {
+            if (!ServerConstants.I_AM_A_CHEATER || offer.isBot || offer.offerState != OfferState.REGISTERED || offer.amountLeft < 1) {
+                return false
+            }
+
+            val recPrice = getRecommendedPrice(offer.itemID, false).toDouble()
+            val safeRecPrice = if (recPrice <= 0.0) 1.0 else recPrice
+
+            val unitPrice = offer.offeredValue.toDouble()
+            val ratio = unitPrice / safeRecPrice
+            val minSellPrice = (safeRecPrice * 0.85).toInt()
+            val maxSellPrice = (safeRecPrice * 1.15).toInt()
+            val minBuyPrice = (safeRecPrice * 0.90).toInt()
+            val maxBuyPrice = (safeRecPrice * 1.10).toInt()
+
+            // Reject extreme prices from bot autofill entirely; these should wait for real market matches.
+            if (offer.sell && ratio > SELL_AUTOFILL_MAX_RATIO) {
+                if (player != null && player.isActive) {
+                    player.packetDispatch.sendMessage("Demand is weak at this price right now. Suggested range: $minSellPrice-$maxSellPrice gp.")
+                }
+                return false
+            }
+            if (!offer.sell && ratio < BUY_AUTOFILL_MIN_RATIO) {
+                if (player != null && player.isActive) {
+                    player.packetDispatch.sendMessage("Supply is thin at this price right now. Suggested range: $minBuyPrice-$maxBuyPrice gp.")
+                }
+                return false
+            }
+
+            val priceFactor = if (offer.sell) {
+                when {
+                    ratio <= 0.95 -> 1.0
+                    ratio >= 1.15 -> 0.02
+                    else -> (1.15 - ratio) / 0.20
+                }
+            } else {
+                when {
+                    ratio >= 1.05 -> 1.0
+                    ratio <= 0.90 -> 0.02
+                    else -> (ratio - 0.90) / 0.15
+                }
+            }.coerceIn(0.02, 1.0)
+
+            // Fixed liquidity factor: prices are now CDN-synced, no saturation tracking.
+            val liquidityFactor = 1.0
+
+            val sizePenalty = (offer.amountLeft / ORDER_SIZE_PENALTY_DIVISOR).coerceIn(0.0, ORDER_SIZE_PENALTY_MAX)
+            val volatility = ThreadLocalRandom.current().nextDouble(VOLATILITY_MIN, VOLATILITY_MAX)
+            val rawFillChance = ((priceFactor * liquidityFactor) - sizePenalty + volatility).coerceIn(FILL_CHANCE_MIN, FILL_CHANCE_MAX)
+            val sellQuantityAdjustment = if (offer.sell) {
+                val amountLeft = offer.amountLeft.toDouble()
+                val smallStackBonus = ((SELL_SMALL_STACK_BONUS_THRESHOLD - amountLeft) / SELL_SMALL_STACK_BONUS_THRESHOLD)
+                    .coerceIn(0.0, 1.0) * SELL_SMALL_STACK_BONUS_MAX
+                val largeStackPenalty = ((amountLeft - SELL_LARGE_STACK_PENALTY_START) / SELL_LARGE_STACK_PENALTY_DIVISOR)
+                    .coerceIn(0.0, SELL_LARGE_STACK_PENALTY_MAX)
+                smallStackBonus - largeStackPenalty
+            } else {
+                0.0
+            }
+            val sellValueAdjustment = if (offer.sell) {
+                when {
+                    safeRecPrice <= SELL_LOW_VALUE_THRESHOLD ->
+                        ((SELL_LOW_VALUE_THRESHOLD - safeRecPrice) / SELL_LOW_VALUE_THRESHOLD)
+                            .coerceIn(0.0, 1.0) * SELL_LOW_VALUE_BONUS_MAX
+                    safeRecPrice >= SELL_HIGH_VALUE_START ->
+                        -((safeRecPrice - SELL_HIGH_VALUE_START) / SELL_HIGH_VALUE_PENALTY_SCALE)
+                            .coerceIn(0.0, SELL_HIGH_VALUE_PENALTY_MAX)
+                    else -> 0.0
+                }
+            } else {
+                0.0
+            }
+            val buyOverpayRatio = ratio - 1.0
+            val buyOverpayAdjustment = if (!offer.sell && buyOverpayRatio > 0.0) {
+                (buyOverpayRatio / BUY_OVERPAY_BOOST_FULL_PERCENT)
+                    .coerceIn(0.0, 1.0) * BUY_OVERPAY_BOOST_MAX
+            } else {
+                0.0
+            }
+            val sellUnderpriceRatio = 1.0 - ratio
+            val sellUnderpriceAdjustment = if (offer.sell && sellUnderpriceRatio > 0.0) {
+                (sellUnderpriceRatio / SELL_UNDERPRICE_BOOST_FULL_PERCENT)
+                    .coerceIn(0.0, 1.0) * SELL_UNDERPRICE_BOOST_MAX
+            } else {
+                0.0
+            }
+            val adjustedFillChance = (rawFillChance + sellQuantityAdjustment + sellValueAdjustment + buyOverpayAdjustment + sellUnderpriceAdjustment)
+                .coerceIn(FILL_CHANCE_MIN, FILL_CHANCE_MAX)
+            val isFavorablePrice = (offer.sell && ratio <= 1.0) || (!offer.sell && ratio >= 1.0)
+            val fillChance = if (isFavorablePrice) maxOf(adjustedFillChance, FAVORABLE_FILL_CHANCE_FLOOR) else adjustedFillChance
+
+            // Scale fill chance by item-specific demand.
+            val demandMultiplier = ItemDemand.getMultiplier(offer.itemID)
+            val demandAdjustedFillChance = (fillChance * demandMultiplier).coerceIn(FILL_CHANCE_MIN, FILL_CHANCE_MAX)
+
+            val passesDynamicCheck = ThreadLocalRandom.current().nextDouble() < demandAdjustedFillChance
+            if (!passesDynamicCheck) {
+                if (!isFavorablePrice && demandAdjustedFillChance <= LOW_FILL_WARNING_THRESHOLD && player != null && player.isActive) {
+                    if (offer.sell) {
+                        player.packetDispatch.sendMessage("Demand is weak at this price right now. Suggested range: $minSellPrice-$maxSellPrice gp.")
+                    } else {
+                        player.packetDispatch.sendMessage("Supply is thin at this price right now. Suggested range: $minBuyPrice-$maxBuyPrice gp.")
+                    }
+                }
+                return false
+            }
+
+            val minFraction = PARTIAL_FILL_MIN
+            val maxFraction = (PARTIAL_FILL_BASE_MAX + (demandAdjustedFillChance * PARTIAL_FILL_FROM_CHANCE_MULTIPLIER))
+                .coerceIn(PARTIAL_FILL_BASE_MAX, PARTIAL_FILL_MAX_CAP)
+            val fraction = ThreadLocalRandom.current().nextDouble(minFraction, maxFraction)
+
+            val percentBasedAmount = maxOf(1, (offer.amountLeft * fraction).toInt())
+            val dynamicLotCap = (BASE_FILL_UNITS + (Math.sqrt(offer.amountLeft.toDouble()) * FILL_UNITS_PER_SQRT).toInt())
+                .coerceIn(MIN_FILL_UNITS, MAX_FILL_UNITS_CAP)
+            val sellMinLot = when {
+                !offer.sell -> MIN_FILL_UNITS
+                offer.amountLeft <= 25 -> 3
+                offer.amountLeft <= 100 -> 2
+                else -> MIN_FILL_UNITS
+            }
+            val minLot = sellMinLot.coerceAtMost(offer.amountLeft)
+            val fulfillAmount = percentBasedAmount
+                .coerceAtLeast(minLot)
+                .coerceAtMost(dynamicLotCap)
+                .coerceAtMost(offer.amountLeft)
+
+            if (offer.uid == 0L) {
+                offer.writeNew()
+            }
+            if (offer.uid <= 0L) {
+                return false
+            }
+            val offerUid = offer.uid
+
+            val otherO = GrandExchangeOffer()
+            otherO.itemID = offer.itemID
+            otherO.amount = fulfillAmount
+            otherO.sell = !offer.sell
+            otherO.offeredValue = offer.offeredValue
+            otherO.isBot = true
+
+            val settlementDelayTicks = ThreadLocalRandom.current().nextInt(SETTLEMENT_MIN_TICKS, SETTLEMENT_MAX_TICKS_EXCLUSIVE)
+            GameWorld.Pulser.submit(object : Pulse(settlementDelayTicks) {
+                override fun pulse(): Boolean {
+                    val offer2 = getOfferByUid(offerUid) ?: return true
+                    if (offer2.offerState != OfferState.REGISTERED || offer2.amountLeft < 1) {
+                        return true
+                    }
+                    exchange(offer2, otherO)
+                    if (offer2.amountLeft > 0 && offer2.offerState == OfferState.REGISTERED) {
+                        scheduleOfferRetry(offerUid)
+                    }
+                    return true
+                }
+            })
+            return true
+        }
 
         private fun getOfferByUid(uid: Long): GrandExchangeOffer? {
             var offer: GrandExchangeOffer? = null
@@ -120,9 +369,9 @@ class GrandExchange : StartupListener, Commands {
         }
 
         @JvmStatic
-        fun getRecommendedPrice(itemID: Int, from_bot: Boolean = false): Int {
+        fun getRecommendedPrice(itemID: Int, fromBot: Boolean = false): Int {
             var base = PriceIndex.getValue(itemID)
-            if (from_bot) base = (max(BotPrices.getPrice(itemID), base) * 1.10).toInt()
+            if (fromBot) base = (maxOf(BotPrices.getPrice(itemID), base) * 1.10).toInt()
             return base
         }
 
@@ -135,15 +384,15 @@ class GrandExchange : StartupListener, Commands {
                 var foundOffers = 0
                 var totalAmount = 0
                 var bestPrice = 0
-                var stmt = conn.createStatement()
+                val stmt = conn.createStatement()
 
                 if (!sale) {
                     var botAmt = 0
                     var botPrice = 0
-                    val player_offers = stmt.executeQuery("SELECT * from player_offers where item_id = $itemID AND is_sale = 1 AND offer_state < 4 AND NOT offer_state = 2")
+                    val playerOffers = stmt.executeQuery("SELECT * from player_offers where item_id = $itemID AND is_sale = 1 AND offer_state = $ACTIVE_OFFER_STATE")
 
-                    while (player_offers.next()) {
-                        val o = GrandExchangeOffer.fromQuery(player_offers)
+                    while (playerOffers.next()) {
+                        val o = GrandExchangeOffer.fromQuery(playerOffers)
                         ++foundOffers
                         totalAmount += o.amountLeft
                         if (o.offeredValue < bestPrice || bestPrice == 0)
@@ -151,10 +400,9 @@ class GrandExchange : StartupListener, Commands {
                     }
 
                     stmt.close()
-                    stmt = conn.createStatement()
-                    val bot_offers = stmt.executeQuery("SELECT * from bot_offers where item_id = $itemID")
-                    if (bot_offers.next()) {
-                        val o = GrandExchangeOffer.fromBotQuery(bot_offers)
+                    val botOffers = conn.createStatement().executeQuery("SELECT * from bot_offers where item_id = $itemID")
+                    if (botOffers.next()) {
+                        val o = GrandExchangeOffer.fromBotQuery(botOffers)
                         botAmt = o.amount
                         botPrice = getRecommendedPrice(itemID, true)
                     }
@@ -165,10 +413,10 @@ class GrandExchange : StartupListener, Commands {
                     sb.append("</col><br>Bot Stock: <col=FFFFFF>$botAmt  ")
                     sb.append("</col>  Bot Price: <col=FFFFFF>$botPrice")
                 } else {
-                    val buy_offers = stmt.executeQuery("SELECT * from player_offers where item_id = $itemID AND is_sale = 0 AND offer_state < 4 AND NOT offer_state = 2")
+                    val buyOffers = stmt.executeQuery("SELECT * from player_offers where item_id = $itemID AND is_sale = 0 AND offer_state = $ACTIVE_OFFER_STATE")
 
-                    while (buy_offers.next()) {
-                        val o = GrandExchangeOffer.fromQuery(buy_offers)
+                    while (buyOffers.next()) {
+                        val o = GrandExchangeOffer.fromQuery(buyOffers)
                         ++foundOffers
                         totalAmount += o.amountLeft
                         if (o.offeredValue > bestPrice)
@@ -198,21 +446,19 @@ class GrandExchange : StartupListener, Commands {
             return true
         }
 
-        fun dispatch(player: Player, offer: GrandExchangeOffer) : Boolean
-        {
-            if ( offer.amount < 1 )
+        fun dispatch(player: Player, offer: GrandExchangeOffer) : Boolean {
+            if (offer.amount < 1)
                 sendMessage(player, "You must choose the quantity you wish to buy!").also { return false }
 
-            if ( offer.offeredValue < 1 )
+            if (offer.offeredValue < 1)
                 sendMessage(player, "You must choose the price you wish to buy for!").also { return false }
 
-            if ( offer.offerState != OfferState.PENDING || offer.uid != 0L )
-            {
-                log(this::class.java, Log.WARN,  "[GE] DISPATCH FAILURE: ${offer.offerState.name}, UID: ${offer.uid}")
+            if (offer.offerState != OfferState.PENDING || offer.uid != 0L) {
+                log(this::class.java, Log.WARN, "[GE] DISPATCH FAILURE: ${offer.offerState.name}, UID: ${offer.uid}")
                 return false
             }
 
-            if ( player.isArtificial )
+            if (player.isArtificial)
                 offer.playerUID = PlayerDetails.getDetails("2009scape").uid.also { offer.isBot = true }
             else
                 offer.playerUID = player.details.uid
@@ -224,20 +470,8 @@ class GrandExchange : StartupListener, Commands {
                 sendNews(player.username + " just offered " + offer.amount + " " + getItemName(offer.itemID) + " on the GE.")
             }
 
-            if (ServerConstants.I_AM_A_CHEATER) {
-                val otherO = GrandExchangeOffer()
-                otherO.itemID = offer.itemID
-                otherO.amount = offer.amount
-                otherO.sell = !offer.sell
-                otherO.offeredValue = offer.offeredValue
-                offer.writeNew()
-                GameWorld.Pulser.submit(object : Pulse(5) {
-                    override fun pulse(): Boolean {
-                        val offer2 = getOfferByUid(offer.uid) ?: return false
-                        exchange(offer2, otherO)
-                        return true
-                    }
-                })
+            if (tryDynamicAutoFill(offer, player)) {
+                scheduleOfferRetry(offer.uid)
                 return true
             }
 
@@ -279,8 +513,7 @@ class GrandExchange : StartupListener, Commands {
             seller.totalCoinExchange += totalCoinXC
             buyer.totalCoinExchange += totalCoinXC
 
-            if(canUpdatePriceIndex(seller, buyer))
-                PriceIndex.addTrade(offer.itemID, amount, (totalCoinXC / amount))
+            // Prices are now CDN-synced; local trades no longer influence the price index.
 
 /*
             if (seller.amountLeft > 0) {
@@ -301,12 +534,6 @@ class GrandExchange : StartupListener, Commands {
             }
         }
 
-        private fun canUpdatePriceIndex(seller: GrandExchangeOffer, buyer: GrandExchangeOffer): Boolean {
-            if(seller.playerUID == buyer.playerUID) return false
-            if(!ServerConstants.BOTS_INFLUENCE_PRICE_INDEX && (seller.isBot || buyer.isBot)) return false
-            return true
-        }
-
         fun getValidOffers(): List<GrandExchangeOffer>
         {
             val offers = ArrayList<GrandExchangeOffer>()
@@ -315,7 +542,7 @@ class GrandExchange : StartupListener, Commands {
                 val stmt = conn.createStatement()
 
                 val results =
-                        stmt.executeQuery("SELECT * FROM player_offers WHERE offer_state < 4 AND NOT offer_state = 2")
+                        stmt.executeQuery("SELECT * FROM player_offers WHERE offer_state = $ACTIVE_OFFER_STATE")
                 while (results.next()) {
                     val o = GrandExchangeOffer.fromQuery(results)
                     offers.add(o)

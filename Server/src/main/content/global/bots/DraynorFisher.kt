@@ -29,7 +29,7 @@ class DraynorFisher  : Script() {
                     } else {
                         scriptAPI.walkTo(fishingZone.randomLoc)
                     }
-                    if(bot.inventory.getMaximumAdd(Item(4151)) < 5)
+                    if(bot.inventory.isFull)
                         state = State.BANKING
                 }
             }

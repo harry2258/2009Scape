@@ -22,6 +22,7 @@ import core.net.packet.context.MessageContext;
 import core.tools.RandomFunction;
 import core.tools.StringUtils;
 import core.game.node.entity.skill.Skills;
+import core.game.system.TelemetryTracker;
 import content.region.misc.tutisland.handlers.iface.CharacterDesign;
 
 import java.io.File;
@@ -532,6 +533,7 @@ public class AIPlayer extends Player {
     @Override
     public void finalizeDeath(Entity killer) {
         setAttribute("bot_death_location", getLocation());
+        TelemetryTracker.onBotDeath(this, killer);
         super.finalizeDeath(killer);
         getPulseManager().clear();
         getProperties().getCombatPulse().stop();

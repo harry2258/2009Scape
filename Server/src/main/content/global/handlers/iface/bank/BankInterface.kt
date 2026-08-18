@@ -8,8 +8,13 @@ import core.game.component.Component
 import core.game.container.Container
 import core.game.interaction.InterfaceListener
 import core.game.node.entity.player.Player
+import core.game.node.item.Item
+import core.net.packet.PacketRepository
+import core.net.packet.context.ContainerContext
+import core.net.packet.out.ContainerPacket
 import org.rs09.consts.Components
 import org.rs09.consts.Items
+import java.util.Locale
 
 /**
  * Allows the user to interact with the Bank Interface.
@@ -55,6 +60,10 @@ class BankInterface : InterfaceListener {
         private const val OP_COLLAPSE_TAB = 196
 
         private const val THRESHOLD_TO_DISPLAY_EXACT_QUANTITY_ON_EXAMINE = 100000
+
+        // Search state attributes — filtered view slots must translate back to real bank slots.
+        private const val ATTR_SEARCHING = "bank:searching"
+        private const val ATTR_SEARCH_SLOTMAP = "bank:search-slotmap"
     }
 
     private fun onBankInterfaceOpen(player: Player, component: Component): Boolean {
@@ -96,18 +105,30 @@ class BankInterface : InterfaceListener {
     }
 
     private fun handleBankMenu(player: Player, component: Component, opcode: Int, buttonID: Int, slot: Int, itemID: Int): Boolean {
-        val item = player.bank.get(slot)
+        // During a search (filtered view), the client reports the index within the
+        // filtered list — translate it back to the real bank slot before acting.
+        var realSlot = slot
+        if (getAttribute(player, ATTR_SEARCHING, false)) {
+            val map = getAttribute(player, ATTR_SEARCH_SLOTMAP, IntArray(0))
+            if (realSlot < 0 || realSlot >= map.size) {
+                resetSearch(player)
+                return true
+            }
+            realSlot = map[realSlot]
+        }
+
+        val item = player.bank.get(realSlot)
             ?: return true
         resetSearch(player)
 
         when (opcode) {
-            OP_AMOUNT_ONE -> player.bank.takeItem(slot, 1)
-            OP_AMOUNT_FIVE -> player.bank.takeItem(slot, 5)
-            OP_AMOUNT_TEN -> player.bank.takeItem(slot, 10)
-            OP_AMOUNT_LAST_X -> player.bank.takeItem(slot, player.bank.lastAmountX)
-            OP_AMOUNT_X -> BankUtils.transferX(player, slot, true)
-            OP_AMOUNT_ALL -> player.bank.takeItem(slot, player.bank.getAmount(item))
-            OP_AMOUNT_ALL_BUT_ONE -> player.bank.takeItem(slot, player.bank.getAmount(item) - 1)
+            OP_AMOUNT_ONE -> player.bank.takeItem(realSlot, 1)
+            OP_AMOUNT_FIVE -> player.bank.takeItem(realSlot, 5)
+            OP_AMOUNT_TEN -> player.bank.takeItem(realSlot, 10)
+            OP_AMOUNT_LAST_X -> player.bank.takeItem(realSlot, player.bank.lastAmountX)
+            OP_AMOUNT_X -> BankUtils.transferX(player, realSlot, true)
+            OP_AMOUNT_ALL -> player.bank.takeItem(realSlot, player.bank.getAmount(item))
+            OP_AMOUNT_ALL_BUT_ONE -> player.bank.takeItem(realSlot, player.bank.getAmount(item) - 1)
             OP_EXAMINE -> {
                 var examineText = item.definition.examine
                 val id = item.definition.id
@@ -159,7 +180,7 @@ class BankInterface : InterfaceListener {
                 MAIN_BUTTON_BOB_DEPOSIT -> openDialogue(player, BankDepositDialogue())
                 MAIN_BUTTON_INSERT_MODE -> player.bank.isInsertItems = !player.bank.isInsertItems
                 MAIN_BUTTON_NOTE_MODE -> player.bank.isNoteItems = !player.bank.isNoteItems
-                MAIN_BUTTON_SEARCH_BANK -> setAttribute(player, "search", true)
+                MAIN_BUTTON_SEARCH_BANK -> openSearch(player)
                 MENU_ELEMENT -> handleBankMenu(player, component, opcode, buttonID, slot, itemID)
                 in BANK_TABS -> handleTabInteraction(player, component, opcode, buttonID, slot, itemID)
             }
@@ -189,10 +210,62 @@ class BankInterface : InterfaceListener {
         return false
     }
 
+    /**
+     * Opens the bank search text-entry. On submit the client returns the
+     * typed string via RunScript, which we route to [applySearch].
+     */
+    private fun openSearch(player: Player) {
+        setAttribute(player, ATTR_SEARCHING, true)
+        setVarc(player, 190, 0) // search active: hide the "Search" option while typing
+        // Search spans all tabs (authentic 530 behavior): jump to the main tab.
+        setAttribute(player, "bank:lasttab", player.bank.tabIndex)
+        player.bank.tabIndex = 10
+        sendInputDialogue(player, InputType.STRING_LONG, "Search bank:") { value ->
+            applySearch(player, value.toString())
+        }
+    }
+
+    /**
+     * Filters the bank by item-name substring (case-insensitive) and pushes
+     * the reduced item list to the bank container. The displayed slot → real
+     * bank slot mapping is stashed so [handleBankMenu] can translate on withdraw.
+     */
+    private fun applySearch(player: Player, query: String) {
+        if (query.isBlank()) {
+            resetSearch(player)
+            return
+        }
+        val needle = query.lowercase(Locale.ROOT)
+        val items = player.bank.toArray()
+        val filtered = ArrayList<Item>()
+        val slotMap = ArrayList<Int>()
+        for (realSlot in items.indices) {
+            val it = items[realSlot] ?: continue
+            if (it.name == null || it.name == "null") continue
+            if (it.name.lowercase(Locale.ROOT).contains(needle)) {
+                filtered.add(it)
+                slotMap.add(realSlot)
+            }
+        }
+        setAttribute(player, ATTR_SEARCH_SLOTMAP, slotMap.toIntArray())
+        // Push the filtered list to the bank container (interface 762 / child 64000 / container 95).
+        PacketRepository.send(
+            ContainerPacket::class.java,
+            ContainerContext(player, 762, 64000, 95, filtered.toTypedArray(), filtered.size, false)
+        )
+        if (filtered.isEmpty()) {
+            sendMessage(player, "No items found matching '$query'.")
+        }
+    }
+
     private fun resetSearch (player: Player)
     {
+        player.removeAttribute(ATTR_SEARCHING)
+        player.removeAttribute(ATTR_SEARCH_SLOTMAP)
         val lastTab = getAttribute(player, "bank:lasttab", 0)
         player.bank.tabIndex = lastTab
         setVarc(player, 190, 1) //re-enable "Search" right-click option on search button.
+        // Re-push the real bank contents so the filtered view is replaced.
+        player.bank.refresh()
     }
 }

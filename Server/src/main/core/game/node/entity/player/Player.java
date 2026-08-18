@@ -79,6 +79,9 @@ import core.game.world.update.PlayerRenderer;
 import core.game.world.update.UpdateSequence;
 import core.game.ge.GrandExchangeRecords;
 import core.game.ge.GrandExchangeOffer;
+import core.game.ge.BotPrices;
+import core.game.bots.AIRepository;
+import core.game.system.TelemetryTracker;
 import core.cache.def.impl.ItemDefinition;
 import core.worker.ManagementEvents;
 import core.game.world.update.flag.context.*;
@@ -649,12 +652,19 @@ public class Player extends Entity {
 			} else {
 				StringBuilder itemsLost = new StringBuilder();
 				int coins = 0;
+				// Bot death drops: register the created ground items against the dying
+				// bot so its corpse-run can find them (drops are filed under the killer
+				// as dropper otherwise), and accumulate their value for telemetry.
+				boolean botDiedToPlayer = this.isArtificial() && killer instanceof Player;
+				List<GroundItem> botDeathDrops = botDiedToPlayer ? new ArrayList<>() : null;
+				long botDropValue = 0L;
+				int botDropCount = 0;
 				for (Item item : c[1].toArray()) {
 					boolean stayPrivate = false;
 					if (item == null) continue;
 					if (killer instanceof Player)
 						itemsLost.append(getItemName(item.getId())).append("(").append(item.getAmount()).append("), ");
-					
+
 					if (GraveController.shouldCrumble(item.getId()))
 						continue;
 					if (GraveController.shouldRelease(item.getId()))
@@ -678,9 +688,25 @@ public class Player extends Entity {
 					}
 					GroundItem gi = GroundItemManager.create(item, location, killer instanceof Player ? (Player) killer : this);
 					gi.setRemainPrivate(stayPrivate);
+					if (botDeathDrops != null) {
+						botDeathDrops.add(gi);
+						botDropValue += (long) BotPrices.getPrice(item.getId()) * item.getAmount();
+						botDropCount += item.getAmount();
+					}
 				}
 				if (coins > 0) {
-					GroundItemManager.create(new Item(Items.COINS_995, coins), location, (Player) killer);
+					GroundItem coinItem = GroundItemManager.create(new Item(Items.COINS_995, coins), location, (Player) killer);
+					if (botDeathDrops != null) {
+						botDeathDrops.add(coinItem);
+						botDropValue += coins;
+						botDropCount += coins;
+					}
+				}
+				if (botDeathDrops != null && !botDeathDrops.isEmpty()) {
+					for (GroundItem gi : botDeathDrops) {
+						AIRepository.addItemFor(this, gi);
+					}
+					TelemetryTracker.onBotDeathDrops(this, botDropValue, botDropCount);
 				}
 				if (killer instanceof Player)
 					PlayerMonitor.log((Player) killer, LogType.PK, "Killed " + name + ", who dropped: " + itemsLost);
@@ -778,14 +804,15 @@ public class Player extends Entity {
 		if (target instanceof Player) {
 			Player p = (Player) target;
 			if (p.getSkullManager().isWilderness() && skullManager.isWilderness()) {
-				if (GameWorld.getSettings() == null || !GameWorld.getSettings().getWild_pvp_enabled()) {
-					return false;
-				}
-				if (p.getSkullManager().hasWildernessProtection()) {
-					return false;
-				}
-                return !skullManager.hasWildernessProtection();
-            } else {
+				// PvP is allowed at ALL wilderness levels (standard behaviour).
+				// The hasWildernessProtection() gates this replaces (level < 49,
+				// commit cb16fe430) silently blocked every PvP interaction below
+				// deep wilderness — players couldn't attack bots, bots couldn't
+				// attack players or each other. Combat-level tolerance is still
+				// enforced by WildernessZone.continueAttack and single/multi
+				// combat by MapZone.checkMulti.
+				return GameWorld.getSettings() != null && GameWorld.getSettings().getWild_pvp_enabled();
+			} else {
 				return false;
 			}
 		}

@@ -62,7 +62,12 @@ class SeersMagicTrees : Script(){
                             bot.faceLocation(bank.location)
                             logCounter += bot.inventory.getAmount(Items.MAGIC_LOGS_1513)
                             scriptAPI.bankItem(Items.MAGIC_LOGS_1513)
-                            state = State.RETURN_TO_TREES
+                            // Sell on the GE after banking a stockpile (mirrors CoalMiner's 500 threshold).
+                            if (bot.bank.getAmount(Items.MAGIC_LOGS_1513) > 500 && !bot.isPlayer) {
+                                state = State.TELE_GE
+                            } else {
+                                state = State.RETURN_TO_TREES
+                            }
                             return true
                         }
                     })

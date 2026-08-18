@@ -59,6 +59,17 @@ class GrandExchangeRecords(private val player: Player? = null) : PersistPlayer, 
 
             while (offer_records.next()) {
                 val offer = GrandExchangeOffer.fromQuery(offer_records)
+                val hasWithdrawItems = offer.withdraw.any { it != null }
+                val isActiveOffer = offer.offerState == OfferState.REGISTERED
+
+                // Clean up stale terminal offers so they cannot reappear after reboot.
+                // If an offer is no longer active and has nothing to withdraw, mark it REMOVED.
+                if (!isActiveOffer && !hasWithdrawItems) {
+                    offer.offerState = OfferState.REMOVED
+                    offer.update()
+                    continue
+                }
+
                 if (offer.index == -1) //used to index old (converted from JSON) offers
                     needsIndex.push(offer)
                 else

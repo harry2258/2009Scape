@@ -4,6 +4,7 @@ import core.game.node.entity.skill.Skills
 import core.game.node.item.Item
 import core.game.world.map.Location
 import core.tools.RandomFunction
+import core.tools.SystemLogger
 import org.rs09.consts.Items
 import java.util.*
 import kotlin.collections.ArrayList
@@ -90,6 +91,9 @@ class CombatBotAssembler {
         bot.skills.setLevel(Skills.HITPOINTS, level)
         bot.skills.setLevel(Skills.ATTACK, level + 5)
         bot.skills.setLevel(Skills.STRENGTH, level + 5)
+        bot.skills.addExperience(Skills.HITPOINTS, getXpForLevel(level) - bot.skills.getExperience(Skills.HITPOINTS))
+        bot.skills.addExperience(Skills.ATTACK, getXpForLevel(level + 5) - bot.skills.getExperience(Skills.ATTACK))
+        bot.skills.addExperience(Skills.STRENGTH, getXpForLevel(level + 5) - bot.skills.getExperience(Skills.STRENGTH))
         bot.skills.updateCombatLevel()
         equipHighest(bot, MELEE_HELMS)
         equipHighest(bot, MELEE_TOP)
@@ -122,6 +126,9 @@ class CombatBotAssembler {
         bot.skills.setLevel(Skills.HITPOINTS, level)
         bot.skills.setLevel(Skills.DEFENCE, level)
         bot.skills.setLevel(Skills.RANGE, level + 10)
+        bot.skills.addExperience(Skills.HITPOINTS, getXpForLevel(level) - bot.skills.getExperience(Skills.HITPOINTS))
+        bot.skills.addExperience(Skills.DEFENCE, getXpForLevel(level) - bot.skills.getExperience(Skills.DEFENCE))
+        bot.skills.addExperience(Skills.RANGE, getXpForLevel(level + 10) - bot.skills.getExperience(Skills.RANGE))
         bot.skills.updateCombatLevel()
         equipHighest(bot,RANGE_HELMS,65)
         equipHighest(bot,RANGE_TOPS,65)
@@ -401,6 +408,41 @@ class CombatBotAssembler {
             Tier.HIGH -> RandomFunction.random(66, 99).also { max = 99 }
             Tier.PURE -> RandomFunction.random(90, 99).also {max = 99 }
         }
+
+        for (skill in skills.indices) {
+            val perc = RandomFunction.random(-variance,variance)
+            var level = initial +  (perc * 33).toInt()
+            if(level < 1)
+                level = 1
+            if(level > max)
+                level = max
+
+            bot.skills.setLevel(skills[skill], level)
+            bot.skills.setStaticLevel(skills[skill], level)
+
+            // --- NEW: Give the bot the actual XP for this level ---
+            val requiredXp = getXpForLevel(level)
+            val currentXp = bot.skills.getExperience(skills[skill])
+            if (requiredXp > currentXp) {
+                bot.skills.addExperience(skills[skill], requiredXp - currentXp)
+            }
+            // ------------------------------------------------------
+
+            totalXPAdd += bot.skills.getExperience(skills[skill])
+            skillAmt++
+        }
+        when (tier){
+            Tier.PURE -> {
+                bot.skills.setStaticLevel(Skills.DEFENCE,10)
+                bot.skills.setStaticLevel(Skills.STRENGTH,99)
+                bot.skills.setStaticLevel(Skills.ATTACK,90)
+                bot.skills.setStaticLevel(Skills.PRAYER,43)
+                bot.skills.setStaticLevel(Skills.RANGE,1)
+                bot.skills.setStaticLevel(Skills.MAGIC,1)
+            }
+            else -> {}
+        }
+        /*
         for (skill in skills.indices) {
             val perc = RandomFunction.random(-variance,variance)
             var level = initial +  (perc * 33).toInt()
@@ -425,6 +467,8 @@ class CombatBotAssembler {
             else -> {}
         }
 
+         */
+
         bot.skills.addExperience(Skills.HITPOINTS, (totalXPAdd / skillAmt) * 0.2)
         val new_hp = bot.skills.levelFromXP((totalXPAdd / skillAmt) * 0.2)
         bot.skills.setStaticLevel(Skills.HITPOINTS,10 + new_hp)
@@ -442,36 +486,58 @@ class CombatBotAssembler {
     private fun equipHighest(bot: AIPlayer, set: Array<Int>, levelcap: Int? = null) {
         val highestItems = ArrayList<Item>()
         var highest: Item? = null
+
         for (i in set.indices) {
-            val item = Item(set[i])
-            var canEquip = true
-            (item.definition.handlers.getOrDefault("requirements",null) as HashMap<Int,Int>?)?.let { map ->
-                levelcap?.let {levelcap ->
-                    map.map {
-                        if (bot.skills.getLevel(it.key) < it.value || it.value > levelcap)
+            try {
+                val item = Item(set[i])
+                if (item.definition == null) continue
+
+                var canEquip = true
+                (item.definition.handlers.getOrDefault("requirements",null) as HashMap<Int,Int>?)?.let { map ->
+                    levelcap?.let { cap ->
+                        map.map { req ->
+                            if (bot.skills.getLevel(req.key) < req.value || req.value > cap)
+                                canEquip = false
+                        }
+                    } ?: map.map { req ->
+                        if (bot.skills.getLevel(req.key) < req.value)
                             canEquip = false
                     }
-                } ?: map.map {
-                    if (bot.skills.getLevel(it.key) < it.value)
-                        canEquip = false
                 }
-            }
-            if (canEquip) {
-                if (highest == null) {
-                    highest = item
-                    highestItems.add(item)
-                    continue
+
+                if (canEquip) {
+                    if (highest == null) {
+                        highest = item
+                        highestItems.add(item)
+                        continue
+                    }
+                    if (item.lvlAvg() > highest.lvlAvg()) {
+                        highest = item
+                        highestItems.clear()
+                        highestItems.add(item)
+                    } else if(item.lvlAvg() == highest.lvlAvg()){
+                        highestItems.add(item)
+                    }
                 }
-                if (item.lvlAvg() > highest.lvlAvg()) {
-                    highest = item
-                    highestItems.clear()
-                    highestItems.add(item)
-                } else if(item.lvlAvg() == highest.lvlAvg()){
-                    highestItems.add(item)
-                }
+            } catch (e: Exception) {
+                // THE SHIELD: If checking an item throws any error at all (missing handler, ClassCastException),
+                // we skip it immediately so the bot thread survives!
+                    SystemLogger.logGE("Bot Builder Crashed! Skipping EquipHighest")
+                continue
             }
         }
-        bot.equipment.add(highestItems.random(), highest!!.definition!!.handlers["equipment_slot"] as Int, false, false)
+
+        if (highest != null && highestItems.size > 0) {
+            try {
+                val randomIndex = java.util.Random().nextInt(highestItems.size)
+                val itemToEquip = highestItems[randomIndex]
+                val slot = highest!!.definition!!.handlers["equipment_slot"] as Int
+                bot.equipment.add(itemToEquip, slot, false, false)
+            } catch (e: Exception) {
+                // Fails silently if it can't be equipped.
+                SystemLogger.logGE("Bot Builder Crashed! Skipping EquipHighest")
+            }
+        }
     }
 
     /**
@@ -481,11 +547,15 @@ class CombatBotAssembler {
     fun Item.lvlAvg(): Int {
         var total = 1
         var count = 1
-        (definition.handlers.getOrDefault("requirements",null) as HashMap<Int,Int>?)?.let { map ->
-            map.map {
-                total += it.value
-                count++
+        try {
+            (definition.handlers.getOrDefault("requirements",null) as HashMap<Int,Int>?)?.let { map ->
+                map.map {
+                    total += it.value
+                    count++
+                }
             }
+        } catch (e: Exception) {
+            // If the item's requirements are bugged, just ignore them and treat it as a level 1 item.
         }
         return total / count
     }
@@ -530,4 +600,12 @@ class CombatBotAssembler {
     val RING_ARCH = arrayOf(6733)
 
     val RICH_MELEE_HELMS = arrayOf(2587,2595,2605,2613,2619,2627,2657,2665,2673,3486,1149,10828,4716,4724,4753)
+
+    private fun getXpForLevel(level: Int): Double {
+        var points = 0.0
+        for (lvl in 1 until level) {
+            points += Math.floor(lvl + 300.0 * Math.pow(2.0, lvl / 7.0))
+        }
+        return Math.floor(points / 4.0)
+    }
 }

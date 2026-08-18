@@ -285,6 +285,14 @@ class ScriptProcessor(val entity: Entity) {
         return currentScript ?: getActiveInteraction()
     }
 
+    /**
+     * Exposes the node (scenery/NPC/ground item) the entity is currently
+     * interacting with, for diagnostics such as the telemetry API.
+     */
+    fun getInteractTarget() : Node? {
+        return interactTarget
+    }
+
     private fun getActiveInteraction() : Script<*>? {
         return opScript ?: apScript
     }

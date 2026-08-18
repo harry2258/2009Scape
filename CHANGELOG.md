@@ -4,6 +4,159 @@ All notable changes to the bot system are documented here. This file is the
 AI's long-term memory for the project — read it before making bot changes so
 past decisions and constraints are respected.
 
+## [Unreleased] — 2026-08-18 (PvP unblocked — follow-up to wilderness overhaul)
+
+### Fixed
+- **Players (and bots) could not fight each other below wilderness level 49**
+  (Player.java) — commit cb16fe430 gated ALL PvP to deep wilderness via
+  `hasWildernessProtection()` (level < 49), silently: no message, the attack
+  pulse just never swung. Per owner decision, PvP is now allowed at every
+  wilderness level (standard RS behaviour); `wild_pvp_enabled` still gates it
+  globally, and combat-level tolerance + single/multi-combat rules still apply.
+  This had also been silently neutering every PKer bot interaction.
+- **2-tile fringe between the ditch and the wilderness zone**
+  (WildernessZone.java) — the zone started at y=3525 but the ditch jump lands
+  at y=3523, so bots pathing through y=3523-3524 got zone-leave()d (Attack
+  option removed, wilderness flag cleared) and players standing there had no
+  Attack option at all. Zone border moved to y=3523 (the landing row).
+- **Process lesson (AI note)**: after a shell interrupt reset the working
+  directory, three "compile" commands silently ran from the repo root where
+  `./mvnw` doesn't exist — the echo-based success marker masked it and the
+  server ran a stale build for hours, sending the owner's in-game attack
+  tests against unfixed code. Always verify `target/classes` timestamps
+  match source edits before restarting, and check mvn's real exit status.
+
+### Changed
+- **Fight stalemates fixed: eats are imperfect and endless fights get abandoned**
+  (Script.java, GeneralBotCreator.kt, WildernessPKer.kt) — 100 minutes of
+  live telemetry showed bots attacking each other with damage landing, but
+  ZERO PvP kills: 12 sharks plus 100%-reliable eating makes even matches
+  unkillable, and nobody disengages until food runs out. Two fixes:
+  - `Script.combatEatReliability` (default 100): percent chance the
+    mid-combat eat attempt actually happens — humans mistime eats. PKers eat
+    at 85% reliability, so a few missed heal windows compound into kills.
+  - PKers abandon a fight after 150 ticks (~90s) against the same foe:
+    `trackFight`/`disengageAndRetreat` — judged unwinnable, escape via
+    tab/glory/running instead of tanking forever.
+  Verified live: herb btw171 broke a Falador tab escaping a fight and
+  banked with 1 tab remaining (restock tops it back up).
+- **Teleport tablets: the level ≤ 20 escape is no longer a free spell**
+  (WildernessPKer.kt) — ~60% of PKers now spawn carrying 1-3 city teleport
+  tabs (Varrock 8007 / Falador 8009, from the existing TeleTabsListener
+  definitions), and RETREATING only teleports at ≤ 20 by BREAKING a tab
+  (consumed on use). Bots without tabs — or out of them — run south on foot
+  like everyone else. When carrying both types, the bot breaks the one whose
+  city is nearest (preserving the closest-bank rule). BANKING restocks tabs
+  up to 2 for carriers only (fake-economy conjure, same convention as food),
+  so the ~60/40 carrier split survives bank cycles and respawns. Glory tier
+  (21-30 → Edgeville, charge drained) unchanged.
+  Verified: carrier distribution ~53-60% in a live spawn sample; the
+  teleport plumbing itself was live-proven by the previous nearest-bank
+  change (same tryTeleportOut path); tab consumption fires on the first
+  organic low-HP retreat at ≤ 20.
+- **Retreating bots teleport to the nearest bank city, not always Lumbridge**
+  (WildernessPKer.kt) — the level ≤ 20 escape tier now picks whichever spell
+  landing is closest to the bot's position (Varrock (3213,3424) for the east
+  wilderness, Falador (2965,3378) for the west — both ~15 tiles from a bank).
+  Lumbridge is excluded: farthest point from the wilderness with no bank, and
+  the walk back kept getting low-tier retreaters killed by cows/dark wizards
+  (observed in death telemetry). Glory tier (levels 21-30) still goes straight
+  to Edgeville. Verified by forced retreat: west-wilderness bot with empty
+  inventory escaped to Falador and banked.
+- **Bot-vs-bot aggression gear gate relaxed** (WildernessPKer.kt) —
+  `isWorthAttacking` required targets to carry 100k+ gear; bot gear lives in
+  a fake economy and rarely clears that, so bot-on-bot PvP never triggered.
+  AIPlayer targets are now fair game regardless of gear value (real players
+  keep the full check).
+- **`combat_level` added to telemetry** (TelemetryServer.kt) — both the bot
+  list and bot detail endpoints, so attack targets can be picked within the
+  ±wilderness-level combat tolerance. Live population spans combat 10-118.
+
+### Verification (live)
+- Bot-vs-bot PvP damage landing (aggressor at 87% HP eating, its bot target
+  at 82%); RETREATING corpse/bank cycles observed; deaths endpoint recording
+  NPC kills across all bands including retreat casualties outside the wild.
+
+### Rollback
+- Revert the commit; PvP returns to level-49+ only on restart.
+
+## [Unreleased] — 2026-08-18 (wilderness overhaul: PvP fix, exploration AI, death telemetry)
+
+### Fixed
+- **Players could not attack AIPlayer bots** (WildernessZone.java) — the attack
+  packet resolves the clicked option from the VICTIM's interaction list
+  (PacketProcessor.processPlayerAction), and `Option._P_ATTACK` was only ever
+  installed by `WildernessZone.show()`, which `enter()` skips for artificial
+  players — so right-click Attack on a bot was a silent no-op. Bots entering
+  the wilderness now get the Attack option installed (no client packets);
+  `leave()` already removed it symmetrically. Downstream rules (both-in-zone,
+  level tolerance) were already satisfied by the bot skullManager upkeep.
+- **Neutral PKer retaliation was unreachable** (WildernessPKer.kt) — the
+  PKerSwingHandler hook sat on the bot's own combat pulse, but incoming player
+  attacks run on the ATTACKER's pulse. Replaced with active detection: on
+  ROAMING/TO_CORPSE ticks, `bot.inCombat()` (recently-hit debuff) + a scan for
+  a nearby player whose combatPulse victim is this bot → RETALIATING.
+- **Bot death drops were invisible to corpse-runs** (Player.java, AIRepository)
+  — drops are created with the killer as dropper, and AIRepository.addItem is
+  only called from NPCDropTables, so `groundItems[bot]` never contained a
+  bot's own death loot (latent Adventurer RECOVER_DEATH gap too). The
+  artificial-killed-by-player branch of Player.finalizeDeath now registers
+  each dropped GroundItem against the dying bot via new
+  `AIRepository.addItemFor`, and accumulates the drop value for telemetry.
+
+### Added
+- **`GET /api/server/deaths`** (TelemetryTracker.kt, TelemetryServer.kt,
+  AIPlayer.java) — server-wide bot death statistics since start:
+  totals, by killer type (player / bot / npc / other), by script,
+  wilderness-vs-outside with level bands (1-10 … 46-56), loot totals
+  (value + items, by script, valued via BotPrices), and a recent-deaths ring
+  buffer (last 100 records with location, wilderness level, killer name/type,
+  loot value/items). `TelemetryTracker.onBotDeath` now receives the killer.
+  NPC-killed bots drop nothing (engine rule) — their loot reads 0.
+- **WildernessPKer risk/reward exploration AI** (WildernessPKer.kt) — bots now
+  explore on their own instead of roaming fixed zones:
+  - `retreatLevel()` weighs food (0.30), HP (0.25), prayer points (0.15),
+    carried wealth (0.10 inverse), and combat stats (0.20) ± an aggressor
+    bravery bias. Stats count twice: confidence AND a hard depth cap
+    (`6 + strengthRatio*50`) — a lvl-50 bot tops out ~level 31, a maxed bot
+    can reach 56 (the max, per user). Resources drain through fighting and
+    praying, so bots organically push deep when stocked and turn back when
+    worn down.
+  - Exploration steps: random bearing 18-42 tiles, y-biased north/neutral/
+    south by comfort margin, clamped to the wilderness rectangle and
+    `retreatLevel - 1` depth. Hotspots remain only as post-bank entry seeds.
+  - **RETREATING** state with authentic escape rules: normal teleports only
+    at wilderness level ≤ 20 (Lumbridge — the engine's skullManager teleport
+    lock enforces this on ScriptAPI.teleport); levels 21-30 only with a
+    charged glory (~35% of bots wear one), which drains a charge and lands
+    at Edgeville; above 30 (or teleblocked) bots run south on foot,
+    re-checking eligibility as the level drops.
+  - **TO_CORPSE** corpse-running: after a PK death the bot walks back to its
+    death spot (crossing the ditch properly), picks up its drops, re-equips,
+    and resumes — but only if its current courage would take it to that
+    depth; otherwise the loot stays for the killer. Getting attacked en
+    route flips to RETALIATING. BANKING re-gears via the assembler when the
+    weapon slot is empty, so death no longer leaves naked bots.
+  - Mid-combat eating (`combatFoodId`), flee-from-losing-fight triggers
+    (hp < 30% and out of food → RETREATING, not standing there dying), and
+    `isWorthAttacking` now skips targets > 12 combat levels above the bot.
+- **PKer spawn tier diversity** (ImmerseWorld.kt, WildernessPKer.newInstance)
+  — tier is rolled per bot (25% LOW / 40% MED / 35% HIGH), decoupled from
+  aggression; the risk model reads the body's real stats, so low-level bots
+  cluster near the ditch emergently like the real low-level wilderness.
+
+### Verification (live, 120 PKers)
+- Kill-hook tests: death records created with correct killer types and loot
+  values (bot-vs-bot kill dropped 267k/31 items); TO_CORPSE crossed the ditch
+  and completed (resume or TO_BANK re-gear); NPC deaths (revenants, guard
+  dogs) logged with wilderness levels and zero loot.
+- Exploration: deepest bots reached wilderness level ~25 within minutes
+  (previous ceiling ~8); RETREATING/Lumbridge teleports observed organically.
+
+### Rollback
+- Revert the commit; behavior reverts on restart. All telemetry counters are
+  in-memory (reset on restart). No database or persisted-state changes.
+
 ## [Unreleased] — 2026-08-17 (OSRS map QoL layout changes)
 
 ### Added

@@ -8,6 +8,7 @@ import content.global.handlers.iface.PageSet
 import content.global.skill.slayer.SlayerManager
 import core.api.setAttribute
 import core.game.node.entity.player.Player
+import core.game.ge.GEDB
 import core.plugin.Initializable
 import org.rs09.consts.Items
 import org.rs09.consts.NPCs
@@ -35,11 +36,35 @@ val FAKE_CONTENT = arrayOf(
     PageSet(Page(), Page()),
     PageSet(Page(), Page()),
     PageSet(Page(), Page()),
+    PageSet(Page(), Page()),
 )
 
 @Initializable
 class StatsCommandSet : CommandSet(Privilege.STANDARD) {
     companion object {
+        private const val GE_TOTAL_GP_EARNED_SQL = "SELECT COALESCE(SUM(total_coin_xc), 0) FROM player_offers WHERE player_uid = ? AND is_sale = 1;"
+        private const val GE_TOTAL_ITEMS_SOLD_SQL = "SELECT COALESCE(SUM(amount_complete), 0) FROM player_offers WHERE player_uid = ? AND is_sale = 1;"
+        private const val GE_COMPLETED_SELL_OFFERS_SQL = "SELECT COUNT(1) FROM player_offers WHERE player_uid = ? AND is_sale = 1 AND amount_complete >= amount_total;"
+
+        private fun getGeStat(player: Player, query: String): Long {
+            var value = 0L
+            GEDB.run { conn ->
+                val stmt = conn.prepareStatement(query)
+                stmt.setInt(1, player.details.uid)
+                val results = stmt.executeQuery()
+                if (results.next()) {
+                    value = results.getLong(1)
+                }
+                stmt.close()
+            }
+            return value
+        }
+
+        private fun getSavedLongStat(player: Player, statKey: String): Long {
+            val value = player.getAttribute("$STATS_BASE:$statKey", 0L)
+            return if (value is Number) value.toLong() else 0L
+        }
+
         private fun display(player: Player, pageNum: Int, buttonId: Int) : Boolean {
             val queryPlayer: Player? = player.getAttribute("stats-command-query-player", null)
             if (queryPlayer == null) {
@@ -62,7 +87,7 @@ class StatsCommandSet : CommandSet(Privilege.STANDARD) {
                             72 -> sendLine(player,"Quest Points: ${queryPlayer.questRepository.points}",i)
                             73 -> sendLine(player,"Ironman Mode: ${queryPlayer.ironmanManager.mode.name.lowercase(Locale.getDefault())}",i)
                             74 -> sendLine(player,"Deaths: ${queryPlayer.getAttribute("$STATS_BASE:$STATS_DEATHS",0)}",i)
-                            75 -> sendLine(player, SPACER,i)
+                            75 -> sendLine(player,"Total Mobs Killed: ${queryPlayer.getAttribute("$STATS_BASE:$STATS_ENEMIES_KILLED",0)}",i)
                             76 -> sendLine(player,"Logs Chopped: ${queryPlayer.getAttribute("$STATS_BASE:$STATS_LOGS",0)}",i)
                             77 -> sendLine(player,"Rocks Mined: ${queryPlayer.getAttribute("$STATS_BASE:$STATS_ROCKS",0)}",i)
                             78 -> sendLine(player,"Fish Caught: ${queryPlayer.getAttribute("$STATS_BASE:$STATS_FISH",0)}",i)
@@ -70,22 +95,21 @@ class StatsCommandSet : CommandSet(Privilege.STANDARD) {
                             80 -> sendLine(player, "Food Cooked: ${queryPlayer.getAttribute("$STATS_BASE:$STATS_FOOD_COOKED",0)}", i)
                             81 -> sendLine(player, "Cats Raised: ${queryPlayer.getAttribute("$STATS_BASE:$STATS_CATS_RAISED",0)}", i)
 
-                            //Boss KC
-                            82 -> sendLine(player, "KBD KC: ${globalData.bossCounters.get(BossKillCounter.KING_BLACK_DRAGON.ordinal)}",i)
-                            83 -> sendLine(player, "TDs KC: ${globalData.bossCounters.get(BossKillCounter.TORMENTED_DEMONS.ordinal)}",i)
-                            84 -> sendLine(player, "Supreme KC: ${globalData.bossCounters.get(BossKillCounter.DAGANNOTH_SUPREME.ordinal)}",i)
-                            85 -> sendLine(player, "Rex KC: ${globalData.bossCounters.get(BossKillCounter.DAGANNOTH_REX.ordinal)}",i)
-                            86 -> sendLine(player, "Prime KC: ${globalData.bossCounters.get(BossKillCounter.DAGANNOTH_PRIME.ordinal)}",i)
-                            87 -> sendLine(player, "Barrows KC: ${globalData.barrowsLoots}",i)
-                            88 -> sendLine(player, "Chaos Ele: ${globalData.bossCounters.get(BossKillCounter.CHAOS_ELEMENTAL.ordinal)}",i)
-                            89 -> sendLine(player, "Mole KC: ${globalData.bossCounters.get(BossKillCounter.GIANT_MOLE.ordinal)}",i)
-                            90 -> sendLine(player, "Sara KC: ${globalData.bossCounters.get(BossKillCounter.SARADOMIN.ordinal)}",i)
-                            91 -> sendLine(player, "Zammy KC: ${globalData.bossCounters.get(BossKillCounter.ZAMORAK.ordinal)}",i)
-                            92 -> sendLine(player, "Bandos KC: ${globalData.bossCounters.get(BossKillCounter.BANDOS.ordinal)}",i)
-                            93 -> sendLine(player, "Arma KC: ${globalData.bossCounters.get(BossKillCounter.ARMADYL.ordinal)}",i)
-                            94 -> sendLine(player, "Jad KC: ${globalData.bossCounters.get(BossKillCounter.JAD.ordinal)}",i)
-                            95 -> sendLine(player, "KQ KC: ${globalData.bossCounters.get(BossKillCounter.KALPHITE_QUEEN.ordinal)}",i)
-                            96 -> sendLine(player, "Corp KC: ${globalData.bossCounters.get(BossKillCounter.CORPOREAL_BEAST.ordinal)}",i)
+
+                            82 -> sendLine(player, "Highest Hit (Any): ${getSavedLongStat(queryPlayer, STATS_HIGHEST_HIT_TOTAL)}", i)
+                            83 -> sendLine(player, "Highest Melee Hit: ${getSavedLongStat(queryPlayer, STATS_HIGHEST_HIT_MELEE)}", i)
+                            84 -> sendLine(player, "Highest Ranged Hit: ${getSavedLongStat(queryPlayer, STATS_HIGHEST_HIT_RANGE)}", i)
+                            85 -> sendLine(player, "Highest Magic Hit: ${getSavedLongStat(queryPlayer, STATS_HIGHEST_HIT_MAGIC)}", i)
+                            86 -> sendLine(player, SPACER, i)
+                            87 -> sendLine(player, "Total Damage Dealt: ${getSavedLongStat(queryPlayer, STATS_DAMAGE_DEALT_TOTAL)}", i)
+                            88 -> sendLine(player, "Melee Damage Dealt: ${getSavedLongStat(queryPlayer, STATS_DAMAGE_DEALT_MELEE)}", i)
+                            89 -> sendLine(player, "Ranged Damage Dealt: ${getSavedLongStat(queryPlayer, STATS_DAMAGE_DEALT_RANGE)}", i)
+                            90 -> sendLine(player, "Magic Damage Dealt: ${getSavedLongStat(queryPlayer, STATS_DAMAGE_DEALT_MAGIC)}", i)
+                            91 -> sendLine(player, SPACER, i)
+                            92 -> sendLine(player, SPACER, i)
+                            93 -> sendLine(player, "GE GP from Sells: ${getGeStat(queryPlayer, GE_TOTAL_GP_EARNED_SQL)}", i)
+                            94 -> sendLine(player, "GE Items Sold: ${getGeStat(queryPlayer, GE_TOTAL_ITEMS_SOLD_SQL)}", i)
+                            95 -> sendLine(player, "GE Sell Offers Done: ${getGeStat(queryPlayer, GE_COMPLETED_SELL_OFFERS_SQL)}", i)
                             else -> sendLine(player,"",i)
                         }
                     }
@@ -119,12 +143,11 @@ class StatsCommandSet : CommandSet(Privilege.STANDARD) {
                             91 -> sendLine(player, "Skeletal Wyverns: ${PlayerStatsCounter.getKills(queryPlayer, SKELETAL_WYVERN_IDS)}", i)
                             92 -> sendLine(player, SPACER,i)
                             93 -> sendLine(player, "Draconic visages: ${PlayerStatsCounter.getRareDrops(queryPlayer, Items.DRACONIC_VISAGE_11286)}", i)
-
                             else -> sendLine(player,"",i)
                         }
                     }
                     2 -> {
-                        when(i) {
+                        when (i) {
                             97 -> sendLine(player, "Ahrim's hood: ${PlayerStatsCounter.getRareDrops(queryPlayer, Items.AHRIMS_HOOD_4708)}", i)
                             68 -> sendLine(player, "Ahrim's staff: ${PlayerStatsCounter.getRareDrops(queryPlayer, Items.AHRIMS_STAFF_4710)}", i)
                             69 -> sendLine(player, "Ahrim's robetop: ${PlayerStatsCounter.getRareDrops(queryPlayer, Items.AHRIMS_ROBETOP_4712)}", i)
@@ -139,7 +162,6 @@ class StatsCommandSet : CommandSet(Privilege.STANDARD) {
                             78 -> sendLine(player, "Guthan's warspear: ${PlayerStatsCounter.getRareDrops(queryPlayer, Items.GUTHANS_WARSPEAR_4726)}", i)
                             79 -> sendLine(player, "Guthan's platebody: ${PlayerStatsCounter.getRareDrops(queryPlayer, Items.GUTHANS_PLATEBODY_4728)}", i)
                             80 -> sendLine(player, "Guthan's chainskirt: ${PlayerStatsCounter.getRareDrops(queryPlayer, Items.GUTHANS_CHAINSKIRT_4730)}", i)
-
                             82 -> sendLine(player, "Karil's coif: ${PlayerStatsCounter.getRareDrops(queryPlayer, Items.KARILS_COIF_4732)}", i)
                             83 -> sendLine(player, "Karil's crossbow: ${PlayerStatsCounter.getRareDrops(queryPlayer, Items.KARILS_CROSSBOW_4734)}", i)
                             84 -> sendLine(player, "Karil's leathertop: ${PlayerStatsCounter.getRareDrops(queryPlayer, Items.KARILS_LEATHERTOP_4736)}", i)
@@ -154,7 +176,27 @@ class StatsCommandSet : CommandSet(Privilege.STANDARD) {
                             93 -> sendLine(player, "Verac's flail: ${PlayerStatsCounter.getRareDrops(queryPlayer, Items.VERACS_FLAIL_4755)}", i)
                             94 -> sendLine(player, "Verac's brassard: ${PlayerStatsCounter.getRareDrops(queryPlayer, Items.VERACS_BRASSARD_4757)}", i)
                             95 -> sendLine(player, "Verac's plateskirt: ${PlayerStatsCounter.getRareDrops(queryPlayer, Items.VERACS_PLATESKIRT_4759)}", i)
-                            else -> sendLine(player,"",i)
+                            else -> sendLine(player, "", i)
+                        }
+                    }
+                    3 -> {
+                        when (i) {
+                            97 -> sendLine(player, "KBD KC: ${globalData.bossCounters.get(BossKillCounter.KING_BLACK_DRAGON.ordinal)}", i)
+                            68 -> sendLine(player, "TDs KC: ${globalData.bossCounters.get(BossKillCounter.TORMENTED_DEMONS.ordinal)}", i)
+                            69 -> sendLine(player, "Supreme KC: ${globalData.bossCounters.get(BossKillCounter.DAGANNOTH_SUPREME.ordinal)}", i)
+                            70 -> sendLine(player, "Rex KC: ${globalData.bossCounters.get(BossKillCounter.DAGANNOTH_REX.ordinal)}", i)
+                            71 -> sendLine(player, "Prime KC: ${globalData.bossCounters.get(BossKillCounter.DAGANNOTH_PRIME.ordinal)}", i)
+                            72 -> sendLine(player, "Barrows KC: ${globalData.barrowsLoots}", i)
+                            73 -> sendLine(player, "Chaos Ele: ${globalData.bossCounters.get(BossKillCounter.CHAOS_ELEMENTAL.ordinal)}", i)
+                            74 -> sendLine(player, "Mole KC: ${globalData.bossCounters.get(BossKillCounter.GIANT_MOLE.ordinal)}", i)
+                            75 -> sendLine(player, "Sara KC: ${globalData.bossCounters.get(BossKillCounter.SARADOMIN.ordinal)}", i)
+                            76 -> sendLine(player, "Zammy KC: ${globalData.bossCounters.get(BossKillCounter.ZAMORAK.ordinal)}", i)
+                            77 -> sendLine(player, "Bandos KC: ${globalData.bossCounters.get(BossKillCounter.BANDOS.ordinal)}", i)
+                            78 -> sendLine(player, "Arma KC: ${globalData.bossCounters.get(BossKillCounter.ARMADYL.ordinal)}", i)
+                            79 -> sendLine(player, "Jad KC: ${globalData.bossCounters.get(BossKillCounter.JAD.ordinal)}", i)
+                            80 -> sendLine(player, "KQ KC: ${globalData.bossCounters.get(BossKillCounter.KALPHITE_QUEEN.ordinal)}", i)
+                            81 -> sendLine(player, "Corp KC: ${globalData.bossCounters.get(BossKillCounter.CORPOREAL_BEAST.ordinal)}", i)
+                            else -> sendLine(player, "", i)
                         }
                     }
                 }

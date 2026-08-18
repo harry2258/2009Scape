@@ -41,6 +41,8 @@ class MysticStaffEnchantInterface : InterfaceListener {
         LAVA(Items.MYSTIC_LAVA_STAFF_3054, Items.LAVA_BATTLESTAFF_3053, 25),
         MUD(Items.MYSTIC_MUD_STAFF_6563, Items.MUD_BATTLESTAFF_6562, 26),
         STEAM(Items.MYSTIC_STEAM_STAFF_11738, Items.STEAM_BATTLESTAFF_11736, 27),
+        SMOKE(14661, 14659, 28),
+        DUST(14665, 14663, 29),
     }
 
     companion object {

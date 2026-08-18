@@ -3,6 +3,8 @@ package core.game.node.entity.npc.drop;
 import static core.api.ContentAPIKt.*;
 
 import content.data.tables.*;
+import core.ServerConstants;
+import core.cache.def.impl.ItemDefinition;
 import core.cache.def.impl.NPCDefinition;
 import content.global.skill.prayer.Bones;
 import core.game.node.entity.Entity;
@@ -12,6 +14,9 @@ import core.game.node.entity.skill.Skills;
 import core.game.node.item.GroundItem;
 import core.game.node.item.GroundItemManager;
 import core.game.node.item.Item;
+import core.game.system.config.ItemConfigParser;
+import core.game.system.task.Pulse;
+import core.game.world.GameWorld;
 import core.game.world.map.Location;
 import core.game.world.map.RegionManager;
 import core.tools.RandomFunction;
@@ -105,6 +110,9 @@ public final class NPCDropTables {
 			}
 			item = item.getPlugin().getItem(item, npc);
 		}
+		// Lootbeam QoL: evaluate once per rolled drop, before the non-stackable
+		// split branch returns early (so split stacks also light a beam).
+		maybeShowLootbeam(player, item, l);
 		if (!item.getDefinition().isStackable() && item.getAmount() > 1) {
 			for (int i = 0; i < item.getAmount(); i++) {
 				GroundItemManager.create(new Item(item.getId()), l, player);
@@ -132,6 +140,54 @@ public final class NPCDropTables {
 				player.setAttribute("botting:drops",items);
 			}
 		}
+	}
+
+	/**
+	 * Lootbeam QoL: draws a column-of-light graphic over the drop tile and
+	 * notifies the killer when the rolled item is rare (tagged via the
+	 * {@code rare_item} config) or meets the GE-value threshold.
+	 *
+	 * <p>The beam is re-sent on a short pulse so it stays visible while the
+	 * ground item exists — this is necessary because a spotanim with no
+	 * animation sequence is auto-removed by the client on the first tick.
+	 * All behavior is gated behind {@link ServerConstants#LOOTBEAM_ENABLED}.
+	 *
+	 * @param player The killer (may be {@code null}).
+	 * @param item   The dropped item.
+	 * @param l      The drop tile.
+	 */
+	private void maybeShowLootbeam(Player player, Item item, Location l) {
+		if (player == null || l == null || !ServerConstants.LOOTBEAM_ENABLED) {
+			return;
+		}
+		ItemDefinition def = item.getDefinition();
+		boolean rare = def.getConfiguration(ItemConfigParser.RARE_ITEM, false);
+		// Use in-memory item definition value — never touches SQLite so the game
+		// tick thread can never block on the GE price-sync database lock.
+		int price = def.getGrandExchangePrice();
+		if (price <= 0) {
+			price = def.getValue();
+		}
+		int totalValue = price * Math.max(1, item.getAmount());
+		if (!rare && totalValue < ServerConstants.LOOTBEAM_VALUE_THRESHOLD) {
+			return;
+		}
+		int graphicId = ServerConstants.LOOTBEAM_GRAPHIC_ID;
+		int pulseTicks = Math.max(1, ServerConstants.LOOTBEAM_PULSE_TICKS);
+		int maxTicks = Math.max(pulseTicks, ServerConstants.LOOTBEAM_PULSE_MAX_TICKS);
+		sendGraphics(graphicId, l);
+		player.sendMessage("<col=ffff00>You received a notable drop: "
+			+ item.getAmount() + " x " + item.getName() + ".</col>");
+		GameWorld.getPulser().submit(new Pulse(pulseTicks) {
+			int elapsed = 0;
+			@Override
+			public boolean pulse() {
+				sendGraphics(graphicId, l);
+				elapsed += getDelay();
+				return elapsed >= maxTicks
+					|| GroundItemManager.get(item.getId(), l, player) == null;
+			}
+		});
 	}
 
 	/**

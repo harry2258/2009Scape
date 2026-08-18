@@ -1238,5 +1238,135 @@
     "@name and i are going easter egg hunting",
     "@name and i are going to look for the easter bunny!!",
     "Hint for anyone who sees this you must dig above eagles peak"
-  ]
+  ],
+
+  "conversations": {
+    "greetings": [
+      ["hey @name", "yo @name", "sup @name", "ello mate", "heyy", "yooo @name", "hey man"],
+      ["hey", "sup", "nm u", "oh hey @name", "yo whats good", "heya", "hey :)"],
+      ["nm just grinding", "wc grind rn lol", "just chilling at ge", "not much, questing", "bored af tbh", "tryna make some gp", "just got 60 mining gz me"],
+      ["nice nice", "gratz dude", "same tbh", "lol i feel that", "nice, wc is so slow", "gp is hard to come by man", "mining is a pain but it pays"],
+      ["lol yeah", "fr tho", "true true", "ikr", "yea tell me about it", "haha yep", "for real"],
+      ["anyway cya man", "aights i gtg", "cya round @name", "later dude", "gotta bounce, cya", "peace", "gtg gl with grinding"]
+    ],
+    "skilling": [
+      ["wc lvl @name?", "you train wc much?", "whats ur wc lvl", "mining or wc better money", "u got 99 wc?", "how long to 99 wc from 75"],
+      ["im 74 wc", "mining is better gp lol", "76 here, willows forever", "no lifed skills im combat nerd", "99 takes forever man", "i do fly fishing, faster", "f the grind, i merch"],
+      ["willows till 99 is the move", "maples at seers r chill", "yews at ge are packed", "i heard teaks are fast", "draynor willows ftw", "i chop yews when i cba", "magics are slow af but good gp"],
+      ["yea but yews r always crowded", "teaks r ez xp ngl", "i always see ppl afk at draynor lol", "seers is the best spot tbh", "magics take forever for a measly log", "obby maul pures chop willows lol", "mining guild coal is decent money"],
+      ["lmao so many afkers everywhere", "same man", "nah i prefer fishing tbh", "lol true", "ikr the grinders never sleep", "ill stick to willows", "coal for the gp whoop"],
+      ["anyway gl with 99", "cya man nice talking", "gtg chop some more, later", "good luck with the grind bro", "later man", "cya dont get banned lol", "peace, happy scaping"]
+    ],
+    "quests": [
+      ["u done dragon slayer @name?", "whats a good starter quest", "monkey madness is pure pain lol", "how hard is desert treasure", "u do cooks assistant yet lol", "questing is so boring but the rewards"],
+      ["yea i did it on my main", "do cooks assistant lol takes 5 min", "mm made me want to quit lol", "dt is rough, bring teleports", "yea rune plate is worth it tho", "i hate questing with a passion", "recipe for disaster is long af"],
+      ["the underground pass was nightmare fuel", "the grand tree quest is pretty fun", "i still need rune mysteries lol", "waterfall quest free xp op", "horror from the deep for the book", "i did sheep shearer like 10 times on alts", "fight arena was easy gp"],
+      ["underground pass gave me the creeps", "waterfall quest xp is broken lol", "rune mysteries is quick do it", "i still cant beat jad", "that elnoyl guy hits like a truck", "sheep shearer is a joke quest lol", "desert treasure after this, pray for me"],
+      ["jad is all nerves man", "fire cape is so worth it", "same here, 6 jad fails", "lol good luck with dt", "youll get the cape eventually", "u can do it bro", "get the fire cape, worth"],
+      ["anyway back to grinding, cya", "gl with ur quests man", "cya later, happy questing", "gtg do cooks assistant for the 100th time lol", "later man", "dont quit on mm lol", "peace"]
+    ],
+    "prices": [
+      ["how much is @item(4151) now", "whip still @price(4151)?", "yew logs going for @price(1515) each?", "@item(14484) still like @price(14484)?", "wts lobs @price(379) each", "rune plate still @price(1127)?"],
+      ["yea about that", "nah it dropped a bit", "check ge bro", "i think so yea", "thats what ge says", "prices keep moving man", "merchers ruined it lol"],
+      ["i remember when they were way more", "everything crashed last month", "someone is flipping @item(563) hard", "nat prices r wild lately", "@item(385) always holds value tho", "santa hats r insane who pays that", "damn merchers man"],
+      ["yep merchers everywhere", "i flip @item(1515) sometimes lol", "sharks never let u down", "rares only go up bro", "i lost my bank flipping nats ffs", "natures r volatile as hell", "santa at @price(1050) is nuts"],
+      ["rip ur bank lol", "never flip what u cant afford to lose", "tru tru", "i just skill for gp, safer", "flipping is free money if ur not dumb", "lol lessons learned", "sharks it is then"],
+      ["anyway cya bro", "gotta go sell my logs, later", "gl merching lol", "cya man", "later dont lose ur bank", "peace", "gtg, cya"]
+    ],
+    "merching": [
+      ["u merch much @name?", "whats flipping good rn", "ge is packed today", "how u make ur gp", "anyone merching @item(561)?", "free trim lol jk"],
+      ["i flip @item(385) mostly", "not telling my items lol", "i killed green dragons for mine", "double nats running", "lmao nice", "i do barrows runs", "flipping is a full time job"],
+      ["barrows is rng hell", "green drags r always packed", "i should try barrows", "nats r solid money", "barrows only good if u get a piece", "double nats is such a trek", "i just do slayer, decent gp"],
+      ["slayer is the best money tbh", "whip drops from slayer thats the dream", "abby demons print money", "i got a d med from barrows once", "slayer tasks take forever tho", "crawling hands lol rookie task", "i got 2 whips from abbys"],
+      ["damn lucky bastard", "gz on that", "im jealous ngl", "i never get drops, rng hates me", "nice lol", "whip me one lol", "my luck is trash"],
+      ["cya man gl", "gtg check my offers, later", "later bro", "cya round ge", "peace man", "o ok cya", "later"]
+    ],
+    "pking": [
+      ["u pk @name?", "edge pking later?", "anyone wanna dm", "i just got piled at mb lol", "pking with @item(4587) is so fun", "whos down for some edge"],
+      ["hell yea", "im a main sorry", "only on my pure", "i get destroyed at edge lol", "mb is a death trap", "dm me at edge", "i just lost my whip pking fml"],
+      ["rip the whip lol", "never take whip to wildy", "rule 1 bro", "1 itemers ruined pking", "pjs are the worst", "safing noobs everywhere", "teles in wildy is for noobs"],
+      ["lmao tele noobs", "i honor dm always", "safers can burn", "pjers are scum", "i smite for specs lol", "dds to ags is deadly", "1 itemers r pathetic ngl"],
+      ["lol savage", "fair enough", "edge honor is dead", "dm me sometime bro", "ill bring my zerk", "my pure is only 60 atk", "same my pure needs quests"],
+      ["aights cya bro", "later man", "gl out there dont get pjed", "cya dont get smited", "peace", "laters", "gg cya"]
+    ],
+    "banter": [
+      ["nice bank lol", "@name ur gear is uh interesting", "bro why u wearing that", "u look like u got dressed in the dark lol", "nice addy pl8 lol", "that outfit hurts my eyes"],
+      ["says u lol", "its my quest gear relax", "fashion scape is life", "at least i have a bank", "addy pl8 is free buddy", "its rs not a fashion show", "lol rood"],
+      ["ur mom said she liked it", "i dress for comfort not for u", "lol fair", "my bank is 213gp and a tinderbox", "ur just jealous of the swag", "poor kid alert lol", "at least my outfit matches"],
+      ["lmao mom jokes classic", "lol ok", "213gp is a flex ngl", "thats my entire net worth dont judge", "the tinderbox is worth more than ur bank", "swag lmao", "matching in rs is easy mode"],
+      ["lol ok u win", "trash talk game strong", "lol ok nerd", "get a life bro", "says the guy in bronze", "haha good one", "ok that was decent"],
+      ["cya loser lol", "later nerd", "haha cya man", "peace trash", "laters buddy", "cya round noob", "gg lol later"]
+    ],
+    "ge": [
+      ["any1 selling @item(379)?", "buying @item(1515) bulk", "how long u been standing here lol", "ge lag is awful today", "price of @item(14484) is nuts", "this spot mine lol"],
+      ["check the ge offers bro", "same been here 20 min", "ikr my offers wont sell", "i just sold my whole bank lol", "someone is buying out @item(563)", "everyone is a mercher now", "lol finders keepers"],
+      ["buying out runes is a classic", "my offer has been sitting for hours ffs", "manipulating prices should be bannable", "at least ur offers exist mine r invisible", "i sold 10k yews feeling rich", "same i hate re-listing", "wanna see my 99 cape"],
+      ["gz if thats real", "10k yews is dedication", "relisting is part of the game", "rip ur offers lol", "99 cape?? gz!!", "u hacked or earned lol", "show off lol"],
+      ["earned every log lol", "ty finally", "it comes with the territory", "pure hand baby", "legit bro 5 months", "haha ofc legit", "u know it"],
+      ["cya at the ge", "later man gl with offers", "gtg my offer sold lol finally", "cya", "peace", "laters bro", "o nice cya"]
+    ]
+  },
+
+  "replies": [
+    {
+      "name": "greeting",
+      "keywords": ["hey", "hi ", "hello", "yo ", "sup", "ello", "heya", "hiya"],
+      "lines": ["hey @name", "sup", "yo", "ello", "heya", "hey man", "sup @name"]
+    },
+    {
+      "name": "bye",
+      "keywords": ["gtg", "cya", "bye", "later", "peace", "goodnight", "gotta go"],
+      "lines": ["cya @name", "later man", "peace", "byee", "cya round", "o cya", "later bro"]
+    },
+    {
+      "name": "price",
+      "keywords": ["how much", "price", "sell", "buying", "wts", "wtb", "gp", "cash"],
+      "lines": ["check ge bro", "ge price it lol", "no idea lol", "prices r weird rn", "ask a mercher lol", "dunno srry", "depends who u ask lol"]
+    },
+    {
+      "name": "quest",
+      "keywords": ["quest", "questing", "dragon slayer", "desert treasure", "jad", "fire cape"],
+      "lines": ["quests r a pain lol", "do cooks assistant its ez", "i hate questing tbh", "gz if u finish", "check runehq they have guides", "quest rewards r worth it", "same here lol"]
+    },
+    {
+      "name": "level",
+      "keywords": ["level", "lvl", "99", "grind", "xp", "exp"],
+      "lines": ["grind is real lol", "nice gz", "xp waste lol", "i need to train that too", "respect the grind", "no lifer lol", "almost 99 myself"]
+    },
+    {
+      "name": "compliment",
+      "keywords": ["nice", "gz", "gratz", "cool", "sweet", "awesome", "gg", "wp"],
+      "lines": ["ty man", "ty @name", "gz u too", "thx bro", "appreciate it", ":) ty", "thanks lol"]
+    },
+    {
+      "name": "insult",
+      "keywords": ["noob", "nub", "trash", "garbage", "fail", "kid", "nerd", "loser", "stupid", "dumb"],
+      "lines": ["says the noob lol", "ur mom said otherwise", "ok kid", "cry more", "trash talk from THAT gear lol", "lol ok", "sure buddy", "stfu lol"]
+    },
+    {
+      "name": "generic",
+      "keywords": [],
+      "lines": ["lol", "haha yea", "true", "ikr", "same tbh", "lol true", "fr", "yea man"]
+    }
+  ],
+
+  "quest_lines": {
+    "arrival": [
+      "ok @quest lets do this",
+      "why is @quest so confusing lol",
+      "reading the @quest dialogue lol",
+      "@quest for the 100th time on this account",
+      "brb doing @quest",
+      "one day ill actually finish @quest"
+    ],
+    "done": [
+      "@quest done ez",
+      "finally finished @quest",
+      "that took forever ffs",
+      "quest complete hell yea",
+      "@quest rewards r actually decent",
+      "whats a good quest after @quest?",
+      "gp from @quest already spent lol"
+    ]
+  }
 }

@@ -9,11 +9,16 @@ import core.Server
 import content.global.bots.Idler
 import core.api.*
 import core.game.interaction.MovementPulse
+import core.game.node.entity.skill.Skills
+import core.game.system.TelemetryTracker
 import core.tools.Log
+import kotlin.math.max
+import kotlin.math.min
 
 class GBCTick : TickListener {
     override fun tick() {
         GeneralBotCreator.botPulsesTriggeredThisTick = 0
+        GeneralBotCreator.updateAdaptiveBotCap()
     }
 }
 
@@ -39,6 +44,44 @@ class GeneralBotCreator {
 
     companion object {
         var botPulsesTriggeredThisTick = 0
+
+        // How long (ticks) a bot may be held by an authentic interaction/pulse with no
+        // script-tick progress before the stale-interaction watchdog force-clears it.
+        const val STALE_SCRIPT_TICKS = 300
+
+        private const val MIN_BOT_SCRIPT_TICKS_PER_WORLD_TICK = 120
+        private const val MAX_BOT_SCRIPT_TICKS_PER_WORLD_TICK = 500
+        private const val TARGET_CYCLE_TIME_MS = 600.0
+        private const val CYCLE_LOWER_SOFT_MS = 602.0
+        private const val CYCLE_UPPER_SOFT_MS = 605.0
+        private const val CYCLE_UPPER_HARD_MS = 620.0
+
+        private var adaptiveBotScriptCap = 300
+        private var smoothedCycleTimeMs = TARGET_CYCLE_TIME_MS
+
+        fun getCurrentBotScriptCap(): Int = adaptiveBotScriptCap
+        fun getSmoothedCycleTimeMs(): Double = smoothedCycleTimeMs
+
+        fun updateAdaptiveBotCap() {
+            val lastCycleMs = GameWorld.lastCycleDurationMs
+            if (lastCycleMs <= 0) return
+
+            smoothedCycleTimeMs = (smoothedCycleTimeMs * 0.9) + (lastCycleMs * 0.1)
+
+            if (smoothedCycleTimeMs > CYCLE_UPPER_HARD_MS) {
+                adaptiveBotScriptCap = max(MIN_BOT_SCRIPT_TICKS_PER_WORLD_TICK, adaptiveBotScriptCap - 50)
+                return
+            }
+
+            if (smoothedCycleTimeMs > CYCLE_UPPER_SOFT_MS) {
+                adaptiveBotScriptCap = max(MIN_BOT_SCRIPT_TICKS_PER_WORLD_TICK, adaptiveBotScriptCap - 20)
+                return
+            }
+
+            if (smoothedCycleTimeMs < CYCLE_LOWER_SOFT_MS) {
+                adaptiveBotScriptCap = min(MAX_BOT_SCRIPT_TICKS_PER_WORLD_TICK, adaptiveBotScriptCap + 20)
+            }
+        }
     }
 
     inner class BotScriptPulse(public val botScript: Script, val isPlayer: Boolean = false) : Pulse(1) {
@@ -49,11 +92,30 @@ class GeneralBotCreator {
         var randomDelay = 0
         var lastBotLocation: Location = botScript.bot.location.transform(0,0,0)
         var lastBotMoveTicks = getWorldTicks()
+        var lastScriptTick = getWorldTicks()
         override fun pulse(): Boolean {
+            TelemetryTracker.onBotActivity(botScript)
             if(randomDelay > 0){
                 randomDelay -= 1
                 return false
             }
+
+            /*
+             * Mid-combat eating. tick() is paused while a CombatPulse runs, so a
+             * script-gated eat() can never fire mid-fight. Scripts that opt in via
+             * combatFoodId get an eat attempt on every pulse tick while attacking
+             * and below ~75% HP; ScriptAPI.eat applies its own randomized 50-75%
+             * threshold, eat cooldowns and attack delay, so this stays authentic.
+             */
+            val combatFoodId = botScript.combatFoodId
+            if (combatFoodId != null && botScript.bot.properties.combatPulse.isAttacking) {
+                val bot = botScript.bot
+                if (bot.skills.lifepoints * 4 < bot.skills.getStaticLevel(Skills.HITPOINTS) * 3
+                    && RandomFunction.random(100) < botScript.combatEatReliability) {
+                    botScript.scriptAPI.eat(combatFoodId)
+                }
+            }
+
             if (botScript.bot.pulseManager.hasPulseRunning()) {
                 if (botScript.bot.pulseManager.current is MovementPulse) {
                     if (botScript.bot.location != lastBotLocation) {
@@ -87,6 +149,30 @@ class GeneralBotCreator {
                 botScript.bot.dialogueInterpreter.close()
             }
 
+            /*
+             * Stale-interaction watchdog. Some authentic interactions never terminate on
+             * their own (e.g. walking to a node that despawned, or a pathfinder-unreachable
+             * destination): the interaction script or pulse keeps running, which gates
+             * botScript.tick() off forever and zombifies the bot in place. If nothing has
+             * let the script tick for a long while, clear whatever is holding it so the
+             * bot recovers on its own. Modal-heavy flows (boat travel etc.) are exempt —
+             * those are legitimately interface-driven and the block above manages them.
+             */
+            if (getWorldTicks() - lastScriptTick >= STALE_SCRIPT_TICKS) {
+                val bot = botScript.bot
+                if (bot.scripts.getActiveScript() != null && !bot.hasModalOpen()) {
+                    bot.scripts.removeNormalScripts()
+                    bot.scripts.removeWeakScripts()
+                    lastScriptTick = getWorldTicks()
+                } else if (bot.pulseManager.hasPulseRunning()
+                    && bot.location == lastBotLocation
+                    && getWorldTicks() - lastBotMoveTicks >= STALE_SCRIPT_TICKS) {
+                    bot.pulseManager.current?.stop()
+                    bot.walkingQueue.reset()
+                    lastScriptTick = getWorldTicks()
+                }
+            }
+
             if (!botScript.bot.pulseManager.hasPulseRunning() && botScript.bot.scripts.getActiveScript() == null) {
 
                 /*if (ticks++ >= RandomFunction.random(90000,120000)) {
@@ -98,15 +184,32 @@ class GeneralBotCreator {
                 }*/
                 if(!botScript.running) return true //has to be separated this way or it double-submits the respawn pulse.
 
-                if (botPulsesTriggeredThisTick++ >= 75)
-                    return false
+                // Never throttle player-controlled scripts behind ambient bot load.
+                if (!isPlayer) {
+                    val cap = getCurrentBotScriptCap()
+                    val botCount = AIRepository.PulseRepository.size.coerceAtLeast(1)
+                    val bucketCount = ((botCount + cap - 1) / cap).coerceAtLeast(1)
+                    val botBucket = Math.floorMod(botScript.bot.username.lowercase().hashCode(), bucketCount)
+                    val activeBucket = Math.floorMod(getWorldTicks(), bucketCount)
+                    if (botBucket != activeBucket) {
+                        return false
+                    }
 
-                val idleRoll = RandomFunction.random(10)
-                if(idleRoll == 2 && botScript !is Idler){
-                    randomDelay += RandomFunction.random(20,50)
-                    return false
+                    // Safety cap in case distribution for this tick is unexpectedly heavy.
+                    if (botPulsesTriggeredThisTick++ >= cap)
+                        return false
+                }
+
+                if (botScript.useRandomIdle) {
+                    val idleRoll = RandomFunction.random(10)
+                    if(idleRoll == 2 && botScript !is Idler){
+                        randomDelay += RandomFunction.random(20,50)
+                        return false
+                    }
                 }
                 botScript.tick()
+                TelemetryTracker.onBotTick(botScript)
+                lastScriptTick = getWorldTicks()
             }
             return false
         }
@@ -115,6 +218,7 @@ class GeneralBotCreator {
             ticks = Integer.MAX_VALUE - 20 //Sets the ticks as high as they can go (safely) and then runs pulse again
             pulse()                        //to trigger the transition pulse to be submitted.
             super.stop()
+            TelemetryTracker.remove(this.botScript.bot.username.lowercase())
             if (Server.running) AIRepository.PulseRepository.remove(this.botScript.bot.username.lowercase())
         }
     }

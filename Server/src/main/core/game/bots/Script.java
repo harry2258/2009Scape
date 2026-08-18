@@ -21,6 +21,21 @@ public abstract class Script {
 
     public boolean running = true;
     public boolean endDialogue = true;
+    public boolean useRandomIdle = true;
+
+    /**
+     * Food id the bot should eat mid-combat. BotScriptPulse checks this every
+     * pulse tick (unlike tick(), which is paused while a CombatPulse runs),
+     * so setting this gives the bot true in-fight eating. Null disables it.
+     */
+    public Integer combatFoodId = null;
+
+    /**
+     * Percent chance the mid-combat eat attempt actually happens — humans
+     * mistime eats under pressure, and bots that eat with 100% reliability
+     * are effectively unkillable in even fights. Default 100 (perfect).
+     */
+    public int combatEatReliability = 100;
 
     public void init(boolean isPlayer)
     {
@@ -51,6 +66,29 @@ public abstract class Script {
     }
 
     public abstract void tick();
+
+    /**
+     * Returns a human-readable diagnostic state of this script for the telemetry API.
+     * Scripts that track their goal in a field named "state" (typically a nested State enum,
+     * as most content bot scripts do) are picked up automatically via reflection.
+     * Scripts without such a field fall back to the script class name.
+     * Override this for richer output (see Adventurer for an example).
+     */
+    public String getDiagnosticState() {
+        try {
+            java.lang.reflect.Field field = getClass().getDeclaredField("state");
+            field.setAccessible(true);
+            Object value = field.get(this);
+            if (value != null) {
+                return value.toString();
+            }
+        } catch (NoSuchFieldException ignored) {
+            // Script has no state field - fall through to the default.
+        } catch (IllegalAccessException ignored) {
+            // Cannot happen after setAccessible(true) on our own classpath - fall through.
+        }
+        return getClass().getSimpleName();
+    }
 
     public void setLevel(int skill, int level) {
         bot.getSkills().setLevel(skill, level);

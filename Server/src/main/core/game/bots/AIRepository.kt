@@ -28,6 +28,17 @@ class AIRepository {
             groundItems[item.dropper]!!.add(item)
         }
 
+        /**
+         * Registers a ground item against a specific player, regardless of who
+         * dropped it. Used for bot death drops: they are created with the killer
+         * as dropper, so [addItem] would file them under the killer and the dead
+         * bot's corpse-run could never find them.
+         */
+        @JvmStatic
+        fun addItemFor(player: Player, item: GroundItem){
+            groundItems.getOrPut(player) { ArrayList() }.add(item)
+        }
+
         @JvmStatic
         fun getItems(player: Player): ArrayList<GroundItem>?{
             return groundItems[player]
@@ -46,7 +57,9 @@ class AIRepository {
         @JvmStatic fun clearAllBots() {
             PulseRepository.toList().forEach { (_, it) ->
                 it.stop()
-                it.botScript.bot.clear()
+                // deregister performs clear() + Repository removal itself. Calling
+                // bot.clear() first strips the bot from botMapping, making deregister
+                // a no-op and leaving orphaned AFK bodies in Repository.players.
                 AIPlayer.deregister((it.botScript.bot as AIPlayer).uid)
             }
         }

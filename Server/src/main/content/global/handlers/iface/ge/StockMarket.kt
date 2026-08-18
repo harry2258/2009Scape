@@ -26,6 +26,11 @@ import kotlin.math.min
  * @author Ceikry
  */
 class StockMarket : InterfaceListener {
+    private data class BuyOfferCoinRemoval(
+        val inventoryCoins: Int,
+        val primaryBankCoins: Int
+    )
+
     override fun defineInterfaceListeners() {
         onOpen(Components.STOCKMARKET_105){player, _ ->
             player.packetDispatch.sendInterfaceConfig(105, 193, true)
@@ -273,15 +278,26 @@ class StockMarket : InterfaceListener {
         else
         {
             val total = offer.amount * offer.offeredValue
-            if(!inInventory(player, 995, total))
+            val coinsInInventory = amountInInventory(player, 995)
+            val coinsInPrimaryBank = amountInBank(player, 995, false)
+            if(coinsInInventory + coinsInPrimaryBank < total)
             {
                 playAudio(player, Sounds.GE_TRADE_ERROR_4039)
                 sendMessage(player, "You do not have enough coins to cover the offer.")
                 return OfferConfirmResult.NotEnoughItemsOrCoins
             }
-            if(GrandExchange.dispatch(player, offer) && removeItem(player, Item(995, total)))
-            {
+            val removedCoins = removeBuyOfferCoins(player, total)
+            if (removedCoins == null) {
+                playAudio(player, Sounds.GE_TRADE_ERROR_4039)
+                sendMessage(player, "Unable to remove coins for this offer. Please try again.")
+                return OfferConfirmResult.ItemRemovalFailure
+            }
+            if(GrandExchange.dispatch(player, offer)) {
                 player.removeAttribute("ge-temp")
+            } else {
+                restoreBuyOfferCoins(player, removedCoins)
+                sendMessage(player, "Unable to place GE offer. Please try again.")
+                return OfferConfirmResult.OfferPlacementError
             }
         }
         playAudio(player, Sounds.GE_PLACE_ITEM_4043)
@@ -297,6 +313,33 @@ class StockMarket : InterfaceListener {
             amount += player.inventory.getAmount(Item(item.definition.noteId))
         }
         return amount
+    }
+
+    private fun removeBuyOfferCoins(player: Player, total: Int): BuyOfferCoinRemoval? {
+        val inventoryCoins = amountInInventory(player, 995).coerceAtMost(total)
+        val primaryBankCoins = total - inventoryCoins
+
+        if (inventoryCoins > 0 && !removeItem(player, Item(995, inventoryCoins))) {
+            return null
+        }
+
+        if (primaryBankCoins > 0 && !player.bankPrimary.remove(Item(995, primaryBankCoins))) {
+            if (inventoryCoins > 0) {
+                addItem(player, 995, inventoryCoins)
+            }
+            return null
+        }
+
+        return BuyOfferCoinRemoval(inventoryCoins, primaryBankCoins)
+    }
+
+    private fun restoreBuyOfferCoins(player: Player, removal: BuyOfferCoinRemoval) {
+        if (removal.inventoryCoins > 0) {
+            addItem(player, 995, removal.inventoryCoins)
+        }
+        if (removal.primaryBankCoins > 0) {
+            player.bankPrimary.add(Item(995, removal.primaryBankCoins))
+        }
     }
 
     companion object {

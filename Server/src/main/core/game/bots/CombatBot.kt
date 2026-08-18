@@ -25,12 +25,6 @@ class CombatBot(location: Location) : AIPlayer(location) {
     override fun tick() {
         super.tick()
         this.tick++
-
-        //Despawn
-        if (skills.lifepoints == 0) {
-            //CombatBotAssembler.produce(CombatBotAssembler.Type.RANGE, CombatBotAssembler.Tier.LOW,this.location)
-            deregister(uid)
-        }
     }
 
     fun CheckPrayer(type: Array<PrayerType?>) {
