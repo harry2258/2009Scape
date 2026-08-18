@@ -35,6 +35,10 @@ public class TollGateOptionPlugin extends OptionHandler {
 					player.getPacketDispatch().sendMessage("You need 10 gold to pass through the gates.");
 				}
 			}
+		} else if (option.equals("open") // with the quest done the guards wave you straight through
+			&& player.getQuestRepository().getQuest(Quests.PRINCE_ALI_RESCUE).getStage(player) > 50) {
+			player.getPacketDispatch().sendMessage("The guards let you through for free.");
+			DoorActionHandler.handleAutowalkDoor(player, (Scenery) node);
 		} else {
 			player.getDialogueInterpreter().open(925, Repository.findNPC(925), (Scenery) node);
 			return true;
@@ -48,6 +52,7 @@ public class TollGateOptionPlugin extends OptionHandler {
 		SceneryDefinition.forId(35551).getHandlers().put("option:pay-toll(10gp)", this);
 		SceneryDefinition.forId(35549).getHandlers().put("option:open", this);
 		SceneryDefinition.forId(35549).getHandlers().put("option:pay-toll(10gp)", this);
+		SceneryDefinition.forId(2882).getHandlers().put("option:open", this);
 		SceneryDefinition.forId(2882).getHandlers().put("option:pay-toll(10gp)", this);
 		return this;
 	}
