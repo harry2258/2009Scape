@@ -20,23 +20,22 @@ class MapQoLTests {
     fun cookingGuildNorthGateOpensGEToEdgevilleCorridor() {
         MapQoLEditsPlugin().startup()
 
-        // gate leaves placed in the south fence line
-        Assertions.assertEquals(15510, RegionManager.getObject(0, 3144, 3466)?.getId(), "west gate leaf missing")
-        Assertions.assertEquals(15512, RegionManager.getObject(0, 3145, 3466)?.getId(), "east gate leaf missing")
+        // gate leaves placed in the stone wall north-west of the compound
+        Assertions.assertEquals(15510, RegionManager.getObject(0, 3128, 3464)?.getId(), "west gate leaf missing")
+        Assertions.assertEquals(15512, RegionManager.getObject(0, 3129, 3464)?.getId(), "east gate leaf missing")
 
-        // north fence line cut: tiles no longer carry any wall/solid bits
-        for (x in intArrayOf(3144, 3145)) {
-            Assertions.assertEquals(0, RegionManager.getClippingFlag(0, x, 3468), "north fence not cleared at ($x,3468)")
+        for (x in intArrayOf(3128, 3129)) {
+            // wall tile itself: terrain-solid cleared, only the closed gate's own bit remains
+            Assertions.assertEquals(0x2, RegionManager.getClippingFlag(0, x, 3464), "gate column not opened at ($x,3464)")
+            // approach tiles clear apart from the closed gate's north-face crossing bit
+            Assertions.assertEquals(0, RegionManager.getClippingFlag(0, x, 3463), "south approach blocked at ($x,3463)")
+            Assertions.assertEquals(0x20, RegionManager.getClippingFlag(0, x, 3465), "north approach wrong at ($x,3465)")
+            // flora clip bits cleared so the corridor runs straight north
+            Assertions.assertEquals(0, RegionManager.getClippingFlag(0, x, 3466) and RegionFlags.OBJ_10, "flora clipping remains at ($x,3466)")
         }
-        // strip between the fences: terrain-solid bit cleared and the removed fences'
-        // crossing bits gone (only the closed gate's neighbour bits may remain)
-        for (x in intArrayOf(3144, 3145)) {
-            val flag = RegionManager.getClippingFlag(0, x, 3467)
-            Assertions.assertEquals(0, flag and RegionFlags.SOLID_TILE, "solid terrain remains at ($x,3467)")
-            Assertions.assertEquals(0, flag and 0x402, "removed north-line fence bits remain at ($x,3467)")
-        }
-        // untouched neighbours keep their fence
-        Assertions.assertNotEquals(0, RegionManager.getClippingFlag(0, 3146, 3466) and 0x402, "fence at (3146,3466) should remain")
+        // untouched wall neighbours keep their clipping
+        Assertions.assertEquals(0x20, RegionManager.getClippingFlag(0, 3127, 3465) and 0xFF, "wall at (3127,3465) altered")
+        Assertions.assertEquals(0x20, RegionManager.getClippingFlag(0, 3130, 3465) and 0xFF, "wall at (3130,3465) altered")
     }
 
     @Test

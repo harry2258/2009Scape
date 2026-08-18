@@ -14,10 +14,10 @@ import core.game.world.map.build.RegionFlags;
 /**
  * Applies the OSRS-era quality-of-life layout changes to the classic map:
  *
- * 1. A gate through the fence immediately north of the Cooking Guild compound,
- *    opening a direct Grand Exchange &lt;-&gt; Edgeville route. The compound's north
- *    side is sealed by a double fence line (23779/23777) over a terrain-solid strip,
- *    which previously forced the detour around via Barbarian Village.
+ * 1. A gate through the stone wall immediately north of the Cooking Guild
+ *    compound (x=3128-3129, y=3464), opening the direct Grand Exchange &lt;-&gt;
+ *    Edgeville route that was previously sealed - walls and fences north and
+ *    west of the compound forced the detour around via Barbarian Village.
  * 2. A gate in the fence south of the Lumbridge Castle courtyard, for direct access
  *    down to the swamp (Water Altar / shed path).
  * 3. The ground-floor Lumbridge Castle staircases are swapped to their two-way
@@ -40,27 +40,26 @@ public class MapQoLEditsPlugin implements StartupListener {
     }
 
     /**
-     * Cuts a two-tile passage through the double fence line north of the Cooking
-     * Guild (column x=3144-3145, fence rows y=3466/3468, solid strip y=3467) and
-     * places the same wooden double gate (15510/15512) the compound already uses
-     * on its south side.
+     * Cuts a two-tile gate through the stone wall that seals the field north-west
+     * of the Cooking Guild (wall segments 26900 + their floor-decor tops 26893 on
+     * y=3464, terrain-solid underneath), on the direct Grand Exchange <->
+     * Edgeville line, and places the same wooden double gate (15510/15512) the
+     * compound already uses on its south side.
      */
     private void openCookingGuildNorthGate() {
-        // South fence line (faces the field between the guild and the Grand Exchange).
-        removeDecorativeWall(23779, Location.create(3144, 3466, 0), 0, 1);
-        removeDecorativeWall(23779, Location.create(3145, 3466, 0), 0, 1);
-        removeDecorativeWall(23777, Location.create(3144, 3466, 1), 0, 1);
-        removeDecorativeWall(23777, Location.create(3145, 3466, 1), 0, 1);
-        // North fence line (faces the open field towards Edgeville).
-        removeDecorativeWall(23779, Location.create(3144, 3468, 0), 0, 3);
-        removeDecorativeWall(23779, Location.create(3145, 3468, 0), 0, 3);
-        removeDecorativeWall(23777, Location.create(3144, 3468, 1), 0, 3);
-        removeDecorativeWall(23777, Location.create(3145, 3468, 1), 0, 3);
-        // The strip between the two fence lines is flagged solid in the mapscape.
-        RegionManager.removeClippingFlag(0, 3144, 3467, false, RegionFlags.SOLID_TILE);
-        RegionManager.removeClippingFlag(0, 3145, 3467, false, RegionFlags.SOLID_TILE);
-        SceneryBuilder.add(new Scenery(15510, Location.create(3144, 3466, 0), 0, 1));
-        SceneryBuilder.add(new Scenery(15512, Location.create(3145, 3466, 0), 0, 1));
+        // wall column at x=3128-3129 (approach tiles y=3463/3465 are clear)
+        removeDecorativeWall(26900, Location.create(3128, 3464, 0), 0, 1);
+        removeDecorativeWall(26900, Location.create(3129, 3464, 0), 0, 1);
+        removeDecorativeWall(26893, Location.create(3128, 3464, 0), 22, 1);
+        removeDecorativeWall(26893, Location.create(3129, 3464, 0), 22, 1);
+        // the wall tiles are terrain-solid; open them on the gate column
+        RegionManager.removeClippingFlag(0, 3128, 3464, false, RegionFlags.SOLID_TILE);
+        RegionManager.removeClippingFlag(0, 3129, 3464, false, RegionFlags.SOLID_TILE);
+        // ground flora north of the gate clips its tiles; clear the corridor
+        RegionManager.removeClippingFlag(0, 3128, 3466, false, RegionFlags.OBJ_10);
+        RegionManager.removeClippingFlag(0, 3129, 3466, false, RegionFlags.OBJ_10);
+        SceneryBuilder.add(new Scenery(15510, Location.create(3128, 3464, 0), 0, 1));
+        SceneryBuilder.add(new Scenery(15512, Location.create(3129, 3464, 0), 0, 1));
     }
 
     /**
@@ -84,8 +83,9 @@ public class MapQoLEditsPlugin implements StartupListener {
     }
 
     /**
-     * Removes a decorative (option-less) wall/fence landscape object: clears the
-     * clipping bits it contributed and marks its tile so clients clear the slot.
+     * Removes a decorative (option-less) landscape object - a wall/fence segment
+     * (type 0-3) or a wall's floor-decor top (type 22): clears the clipping bits
+     * it contributed and marks its tile so clients clear the slot.
      */
     private static void removeDecorativeWall(int id, Location loc, int type, int rotation) {
         RegionPlane plane = RegionManager.getRegionPlane(loc);
@@ -93,9 +93,13 @@ public class MapQoLEditsPlugin implements StartupListener {
         int localX = loc.getLocalX();
         int localY = loc.getLocalY();
         SceneryDefinition def = SceneryDefinition.forId(id);
-        plane.getFlags().unflagDoorObject(localX, localY, rotation, type, def.isProjectileClipped());
-        if (def.isProjectileClipped()) {
-            plane.getProjectileFlags().unflagDoorObject(localX, localY, rotation, type, false);
+        if (type <= 3) {
+            plane.getFlags().unflagDoorObject(localX, localY, rotation, type, def.isProjectileClipped());
+            if (def.isProjectileClipped()) {
+                plane.getProjectileFlags().unflagDoorObject(localX, localY, rotation, type, false);
+            }
+        } else if (type == 22 && def.clipType == 1) {
+            plane.getFlags().unflagTileObject(localX, localY);
         }
         // Non-renderable placeholder in plane grid + chunk: on every chunk
         // synchronize clients receive ClearScenery for this type/rotation slot.

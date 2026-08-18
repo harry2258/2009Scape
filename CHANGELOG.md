@@ -8,13 +8,15 @@ past decisions and constraints are respected.
 
 ### Added
 - **Gate north of the Cooking Guild (direct Grand Exchange ↔ Edgeville route)**
-  (MapQoLEditsPlugin.java) — OSRS QoL parity. The compound's north side was
-  sealed by a double fence line (23779/23777 objects at y=3466/3468 over a
-  mapscape-solid strip at y=3467) plus the stone wall west of it, so players
-  had to detour via Barbarian Village or through the GE. The plugin cuts a
-  two-tile passage (column x=3144-3145) and places the same wooden double
-  gate the compound already uses (15510/15512 — already in
-  door_configs.json), directly north of the compound's north wall.
+  (MapQoLEditsPlugin.java) — OSRS QoL parity. The field north-west of the
+  compound was sealed by the stone wall on y=3464 (26900 wall segments +
+  26893 floor-decor tops over terrain-solid tiles), so players had to detour
+  via Barbarian Village or through the GE. The plugin cuts a two-tile gate
+  column at x=3128-3129 (chosen in-world at Harry2258's position during
+  playtest) and places the same wooden double gate the compound already uses
+  (15510/15512 — already in door_configs.json). An earlier cut through the
+  double fence at x=3144-3145 was reverted after playtesting showed the wall
+  at x3128 was the intended crossing.
   - Why a startup plugin and not ObjectParser.xml: the fence segments are
     option-less landscape objects, which a normal region load does not store,
     so `mode="remove"` (which needs the stored object) can't touch them. The
