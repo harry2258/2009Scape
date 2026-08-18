@@ -48,6 +48,8 @@ public final class LumbridgeNodePlugin extends OptionHandler {
 		SceneryDefinition.forId(36976).getHandlers().put("option:ring", this);
 		SceneryDefinition.forId(22114).getHandlers().put("option:open", this);
 		SceneryDefinition.forId(29355).getHandlers().put("option:climb-up", this);
+		SceneryDefinition.forId(36774).getHandlers().put("option:climb-down", this);
+		SceneryDefinition.forId(36777).getHandlers().put("option:climb-down", this);
 		SceneryDefinition.forId(37655).getHandlers().put("option:view", this);
         SceneryDefinition.forId(org.rs09.consts.Scenery.LOGS_36974).getHandlers().put("option:take-axe", this);
 		return this;
@@ -63,6 +65,15 @@ public final class LumbridgeNodePlugin extends OptionHandler {
                     break;
                 }
                 ClimbActionHandler.climbLadder(player, node.asScenery(), "climb-up");
+                return true;
+            case 36774:// main staircases - ground floor instances lead down into the cellar
+            case 36777:
+                if (node.getLocation().getZ() == 0 && node.getLocation().getX() == 3204
+                    && (node.getLocation().getY() == 3207 || node.getLocation().getY() == 3229)) {
+                    ClimbActionHandler.climb(player, null, new Location(3209, 9617, 0));
+                    break;
+                }
+                ClimbActionHandler.climbLadder(player, node.asScenery(), "climb-down");
                 return true;
             case 37095:
                 if (!player.getEquipment().contains(9706, 1) || !player.getEquipment().contains(9705, 1)) {
