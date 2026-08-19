@@ -8,6 +8,7 @@ import core.tools.RandomFunction
 import core.Server
 import content.global.bots.Idler
 import core.api.*
+import core.game.interaction.Clocks
 import core.game.interaction.MovementPulse
 import core.game.node.entity.skill.Skills
 import core.game.system.TelemetryTracker
@@ -110,10 +111,24 @@ class GeneralBotCreator {
             val combatFoodId = botScript.combatFoodId
             if (combatFoodId != null && botScript.bot.properties.combatPulse.isAttacking) {
                 val bot = botScript.bot
-                if (bot.skills.lifepoints * 4 < bot.skills.getStaticLevel(Skills.HITPOINTS) * 3
-                    && RandomFunction.random(100) < botScript.combatEatReliability) {
+                // Authentic eat cadence: real players can only eat once per 2 ticks
+                // (NEXT_EAT clock) and eat late (~45%, risking KO windows) — eating
+                // every tick at 60%+ pinned fighters at high HP and no fight ever
+                // reached a KO window. shouldCombatEat lets scripts trade the heal
+                // for attack time (eating delays the next swing by 3 ticks).
+                if (bot.skills.lifepoints * 20 < bot.skills.getStaticLevel(Skills.HITPOINTS) * 9
+                    && bot.clocks[Clocks.NEXT_EAT] < GameWorld.ticks
+                    && RandomFunction.random(100) < botScript.combatEatReliability
+                    && botScript.shouldCombatEat()) {
                     botScript.scriptAPI.eat(combatFoodId)
+                    bot.clocks[Clocks.NEXT_EAT] = GameWorld.ticks + 2
                 }
+            }
+
+            // In-fight decision making (KO swaps, specials, smite) — must run
+            // ungated for the same reason as the eat hook above.
+            if (botScript.bot.properties.combatPulse.isAttacking) {
+                botScript.combatTick()
             }
 
             if (botScript.bot.pulseManager.hasPulseRunning()) {

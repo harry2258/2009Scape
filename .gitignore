@@ -42,3 +42,29 @@ Server/hasRan.txt
 # Env files containing secrets
 /.env
 /*.env
+
+# Local AI/IDE tooling
+.agents/
+.ai/
+.codex/
+.idea1/
+.run/
+.zcode/
+__pycache__/
+
+# Generated knowledge graph
+graphify-out/
+Server/graphify-out/
+
+# Build artifacts
+/target/
+Server/server.jar
+Tools/Frostys Cache Editor/bin/
+
+# Runtime data, backups, and personal player saves
+Server/harry2258.json
+Server/cdn.json
+Server/data/ge/
+Server/data/cache_backup/
+Server/data/players_backup_*/
+telemetry_soak.jsonl

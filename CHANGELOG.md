@@ -4,6 +4,97 @@ All notable changes to the bot system are documented here. This file is the
 AI's long-term memory for the project — read it before making bot changes so
 past decisions and constraints are respected.
 
+### Changed — fight sustainability tuning (per owner, telemetry-driven)
+- **Food kit halved: 12 → 6 per trip** (WildernessPKer `KIT_FOOD_COUNT`;
+  kit spawn, newInstance, bank restock all reference it). Diagnosis from 45
+  minutes of live telemetry: with 12 sharks and clock-gated eating, sustain
+  (~10 hp/tick) decisively outpaced bot-vs-bot DPS (~2 hp/tick) — victims
+  oscillated 45-65% HP forever, KO mode (35% trigger) never opened, zero PvP
+  kills while green dragons/revenants racked up all 22 PKer deaths. Half the
+  kit means someone's food runs out, then they die or flee. Risk model's
+  foodRatio divisor recalibrated 8 → KIT_FOOD_COUNT so retreat confidence
+  reads the same at the new full-kit value.
+- **Eat-or-attack decision** (`Script.shouldCombatEat()`, consulted by the
+  BotScriptPulse eat hook): eating already costs attack time — ScriptAPI.eat
+  delays the next swing 3 ticks (`combatPulse.delayNextAttack(3)`), handing
+  the opponent free hits — but bots always ate anyway. WildernessPKer now
+  skips the heal while a KO is on (mid-burst, or victim ≤25% HP) unless its
+  own HP is critical (≤25%): the classic race-the-kill gamble.
+- **Panic combo-eat made unreliable**: `Script.comboEatReliability`
+  (default 100), set to 55 for WildernessPKer — the emergency food+karambwan
+  pair sometimes doesn't come off, which is exactly the tick-wide opening an
+  opponent's KO needs. Failed rolls retry next tick.
+
+### Changed
+- **Fight dynamics tuning (telemetry-driven round)**:
+  - **Authentic eat cadence** (GeneralBotCreator): mid-combat eating now
+    respects the engine's 2-tick NEXT_EAT clock and triggers at ~45% HP —
+    eating every tick at 60%+ had pinned fighters at high HP so no fight
+    ever reached a KO window (one sub-60% victim sample in 6 minutes).
+  - **Opening DDS specials**: fights open with the spec (classic NH opener)
+    because bot-vs-bot DPS alone rarely reaches KO windows; KO mode is
+    time-boxed (8 ticks) and re-triggers at victim ≤35% or on re-engagement
+    while energy lasts. Verified live: 32 SPECs across all four builds.
+  - **Give-up timer removed** (per owner): fights resolve naturally —
+    someone runs out of food and dies, flees, or gets KO'd.
+  - **Kit-preserving banking**: the BANKING deposit loop no longer banks the
+    technique kit (2h/DDS/karambwans/tabs) as loot; inventories running
+    28/28 full of loot had silently disarmed KOs. enterKoMode eats to make
+    room for the weapon swap when full (authentic PK behavior).
+  - Combo eating and PI flicks are cooldown-limited (the unguarded PI flick
+    spammed re-toggles on drained pures).
+- **`VICTIM_HP`/`KO_SKIP` diagnostic events** (WildernessPKer) — low-noise
+  fight-trajectory samples in the technique telemetry; remove when the
+  dynamics are settled.
+
+## [Unreleased] — 2026-08-18 (2009-era PK builds, techniques, decision telemetry)
+
+### Added
+- **PK account builds at creation** (CombatBotAssembler.PKBuild,
+  ImmerseWorld, WildernessPKer) — replaces flat tier rolls with four
+  2009-authentic builds, each a stat spread + matching gear combo + implied
+  technique set. Spawn mix: 30% PURE (1 def, 40-70/60-99/1/13-31 — leather +
+  rune scim), 25% ZERKER (45 def, 52 pray — zerker helm/rune, d scim),
+  20% RUNE_PURE (40 def, full rune), 25% MAIN (70-99 all, best lists).
+  Prayer level now comes from the build (was flat 55) — it gates which
+  prayers each bot may authentically use. Pures cluster near the ditch
+  emergently via the existing strength-based risk cap. Verified live:
+  combat levels 54-114 in the expected build bands.
+- **`Script.combatTick()`** (Script.java, GeneralBotCreator.kt) — called
+  every pulse tick while attacking, ungated (tick() is paused during
+  combat). The hook point for all in-fight decision making.
+- **2009 melee technique package** (WildernessPKer.combatTick):
+  - KO weapon switching: rune 2h swap when the victim hits ≤30% — attack
+    timing persists across the swap (authentic switch mechanic).
+  - DDS specials: builds with 60+ attack and ≥25% spec energy wield the
+    dragon dagger(p++) and toggle the special bar at KO time (the Puncture
+    handler fires and auto-untoggles). Energy refills at bank fullRestore.
+  - Combo eating: 3 karambwans carried; food + karambwan same-tick below
+    30% HP (engine models karambwans as combo food). Bank restocks.
+  - Smite: 52+ prayer builds smite Player victims under ~15 prayer with
+    overheads on (drain is engine-side at 25% of damage) to drop Protect
+    Item before the kill.
+  - Protect Item flick when losing (points-checked and cooldown-limited —
+    an unguarded version spammed re-toggles on drained pures).
+  - Natural skulling: aggressors are skulled by the engine's checkSkull on
+    their first landed hit (authentic 2000-tick expiry, retaliation exempt)
+    instead of a permanent self-skull.
+- **`GET /api/server/techniques`** (TelemetryTracker, TelemetryServer) —
+  decision-making telemetry: totals + per-build breakdown for SPEC,
+  KO_SWAP, COMBO_EAT, SMITE, PI_FLICK, TAB_ESCAPE, GLORY_ESCAPE,
+  FLED_FIGHT, plus a last-100 recent-decisions ring. Per-bot technique
+  events also appear in the existing /api/bots/{name}/events stream.
+
+### Notes
+- Era filter per owner: rune 2h KOs, DDS specs, smite, Protect Item are
+  RS2-2009 authentic; OSRS-only content (dragon bolts (e), avarice, blighted
+  volcano levels) excluded. Karambwan combo eating kept — this engine
+  deliberately models it (isIgnoreMainClock).
+
+### Rollback
+- Revert the commit; builds revert to tier rolls and techniques/telemetry
+  disappear on restart. All counters in-memory.
+
 ## [Unreleased] — 2026-08-18 (PvP unblocked — follow-up to wilderness overhaul)
 
 ### Fixed

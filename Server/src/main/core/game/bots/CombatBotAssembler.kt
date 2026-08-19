@@ -1,6 +1,7 @@
 package core.game.bots
 
 import core.game.node.entity.skill.Skills
+import core.api.EquipmentSlot
 import core.game.node.item.Item
 import core.game.world.map.Location
 import core.tools.RandomFunction
@@ -24,6 +25,150 @@ class CombatBotAssembler {
         MED,
         HIGH,
         PURE
+    }
+
+    /**
+     * 2009-era PK account builds. Each build is an authentic stat spread plus a
+     * matching gear combo, and implies which PK techniques the bot's script may
+     * use (DDS specials need 60+ attack, smite needs 52+ prayer, etc.).
+     */
+    enum class PKBuild {
+        PURE,      // 1-defence: high str, low pray — DDS KOs, stays shallow
+        ZERKER,    // 45 def, 52 pray — smite + DDS KOs
+        RUNE_PURE, // 40 def — 2h KO swaps
+        MAIN;      // everything, deep wilderness
+
+        companion object {
+            /**
+             * Weighted roll for spawn distribution: 30% pure / 25% zerker /
+             * 20% rune pure / 25% main.
+             */
+            fun random(): PKBuild = when (RandomFunction.random(100)) {
+                in 0..29  -> PURE
+                in 30..54 -> ZERKER
+                in 55..74 -> RUNE_PURE
+                else      -> MAIN
+            }
+        }
+    }
+
+    /**
+     * Assembles a PKer body for the given build: era-authentic stats and gear.
+     * @param build the PK account build.
+     * @param location spawn/respawn location.
+     * @return a CombatBot with the build's stats and gear.
+     */
+    fun assemblePKBuild(build: PKBuild, location: Location): CombatBot {
+        val bot = CombatBot(location)
+        when (build) {
+            PKBuild.PURE -> applyLevels(
+                bot,
+                attack = RandomFunction.random(40, 70),
+                strength = RandomFunction.random(60, 99),
+                defence = 1,
+                prayer = RandomFunction.random(13, 31),
+                hitpoints = RandomFunction.random(60, 80)
+            )
+            PKBuild.ZERKER -> applyLevels(
+                bot,
+                attack = RandomFunction.random(60, 80),
+                strength = RandomFunction.random(80, 99),
+                defence = 45,
+                prayer = 52,
+                hitpoints = RandomFunction.random(75, 92)
+            )
+            PKBuild.RUNE_PURE -> applyLevels(
+                bot,
+                attack = RandomFunction.random(50, 75),
+                strength = RandomFunction.random(70, 99),
+                defence = 40,
+                prayer = RandomFunction.random(44, 52),
+                hitpoints = RandomFunction.random(70, 90)
+            )
+            PKBuild.MAIN -> applyLevels(
+                bot,
+                attack = RandomFunction.random(70, 99),
+                strength = RandomFunction.random(70, 99),
+                defence = RandomFunction.random(70, 99),
+                prayer = 70,
+                hitpoints = RandomFunction.random(85, 99)
+            )
+        }
+        when (build) {
+            PKBuild.PURE -> {
+                equip(bot, 1169, EquipmentSlot.HEAD)      // coif
+                equip(bot, 1129, EquipmentSlot.CHEST)    // leather body
+                equip(bot, 1095, EquipmentSlot.LEGS)     // leather chaps
+                equip(bot, 1333, EquipmentSlot.WEAPON)   // rune scimitar
+                equipHighest(bot, CAPE)
+                equipHighest(bot, arrayOf(1725))         // amulet of strength
+                equipHighest(bot, NGLOVES)
+                equipHighest(bot, arrayOf(1061))         // leather boots
+            }
+            PKBuild.ZERKER -> {
+                equip(bot, 3751, EquipmentSlot.HEAD)      // berserker helm
+                equip(bot, 1125, EquipmentSlot.CHEST)    // rune platebody
+                equip(bot, 1079, EquipmentSlot.LEGS)     // rune platelegs
+                equip(bot, 1201, EquipmentSlot.SHIELD)   // rune kiteshield
+                equip(bot, 4587, EquipmentSlot.WEAPON)   // dragon scimitar
+                equipHighest(bot, CAPE)
+                equipHighest(bot, NNECK)                 // glory-tier
+                equipHighest(bot, NGLOVES)
+                equipHighest(bot, NBOOTS)
+            }
+            PKBuild.RUNE_PURE -> {
+                equip(bot, 1163, EquipmentSlot.HEAD)      // rune full helm
+                equip(bot, 1127, EquipmentSlot.CHEST)    // rune platebody
+                equip(bot, 1079, EquipmentSlot.LEGS)     // rune platelegs
+                equip(bot, 1201, EquipmentSlot.SHIELD)   // rune kiteshield
+                equip(bot, 1333, EquipmentSlot.WEAPON)   // rune scimitar
+                equipHighest(bot, CAPE)
+                equipHighest(bot, NNECK)
+                equipHighest(bot, NGLOVES)
+                equipHighest(bot, NBOOTS)
+            }
+            PKBuild.MAIN -> {
+                equipHighest(bot, MELEE_HELMS)
+                equipHighest(bot, MELEE_TOP)
+                equipHighest(bot, MELEE_LEG)
+                equipHighest(bot, MELEE_SHIELD)
+                equipHighest(bot, MELEE_WEP)
+                equipHighest(bot, CAPE)
+                equipHighest(bot, NNECK)
+                equipHighest(bot, NGLOVES)
+                equipHighest(bot, NBOOTS)
+            }
+        }
+        bot.equipment.refresh()
+        bot.skills.updateCombatLevel()
+        bot.fullRestore()
+        return bot
+    }
+
+    /** Sets static+dynamic levels and syncs XP for a skill block. */
+    private fun applyLevels(bot: AIPlayer, attack: Int, strength: Int, defence: Int, prayer: Int, hitpoints: Int) {
+        for ((skill, level) in listOf(
+            Skills.ATTACK to attack, Skills.STRENGTH to strength, Skills.DEFENCE to defence,
+            Skills.PRAYER to prayer, Skills.HITPOINTS to hitpoints
+        )) {
+            bot.skills.setLevel(skill, level)
+            bot.skills.setStaticLevel(skill, level)
+            val requiredXp = getXpForLevel(level)
+            if (requiredXp > bot.skills.getExperience(skill)) {
+                bot.skills.addExperience(skill, requiredXp - bot.skills.getExperience(skill))
+            }
+        }
+    }
+
+    /** Equips one specific item id into a slot, ignoring requirements. */
+    private fun equip(bot: AIPlayer, itemId: Int, slot: core.api.EquipmentSlot) {
+        try {
+            val item = Item(itemId)
+            if (item.definition == null) return
+            bot.equipment.add(item, slot.ordinal, false, false)
+        } catch (e: Exception) {
+            SystemLogger.logGE("PKBuild equip failed for $itemId: ${e.message}")
+        }
     }
 
     /**

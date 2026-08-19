@@ -37,6 +37,31 @@ public abstract class Script {
      */
     public int combatEatReliability = 100;
 
+    /**
+     * Percent chance the panic combo-eat (main food + combo food in one tick)
+     * actually comes off — fumbling the emergency heal is what opens KO
+     * windows. Default 100 (perfect).
+     */
+    public int comboEatReliability = 100;
+
+    /**
+     * Eat-or-attack decision, consulted by the mid-combat eat hook before
+     * feeding the bot. Eating already costs attack time (ScriptAPI.eat
+     * delays the next swing by 3 ticks, handing the opponent free hits),
+     * so this is where a script chooses to skip the heal and keep the
+     * pressure on — e.g. pressing a KO on a nearly-dead victim. Returning
+     * false skips this eat attempt.
+     */
+    public boolean shouldCombatEat() { return true; }
+
+    /**
+     * Called every BotScriptPulse tick while the bot's combat pulse is
+     * attacking — unlike tick(), which is paused during combat. Scripts
+     * override this for in-fight decision making (KO weapon swaps, specials,
+     * smite, emergency eating).
+     */
+    public void combatTick() {}
+
     public void init(boolean isPlayer)
     {
         //bot.init();

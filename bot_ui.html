@@ -1,0 +1,1334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Landsraad Bot Control Panel</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161a22;
+    --panel-2: #1b2029;
+    --border: #242b38;
+    --text: #cfd6e4;
+    --muted: #7d8798;
+    --gold: #e8c55a;
+    --gold-dim: #c9a227;
+    --red: #f85149;
+    --orange: #f5a524;
+    --green: #3fb950;
+    --blue: #58a6ff;
+    --purple: #bc8cff;
+    --mono: "Cascadia Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.45 "Segoe UI", system-ui, sans-serif; }
+  body { padding-bottom: 40px; }
+  button, input, select { font: inherit; color: inherit; }
+  h1 { font-size: 16px; margin: 0; letter-spacing: .3px; }
+  h1 .gold { color: var(--gold); }
+
+  /* ---------- header ---------- */
+  header {
+    position: sticky; top: 0; z-index: 30;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .conn { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); box-shadow: 0 0 6px currentColor; }
+  .dot.on { background: var(--green); }
+  .dot.warn { background: var(--orange); }
+  header .spacer { flex: 1; }
+  .hdr-note { font-size: 12px; color: var(--muted); }
+  .hdr-note b { color: var(--orange); font-weight: 600; }
+
+  .btn {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    padding: 5px 12px; border-radius: 6px; cursor: pointer;
+  }
+  .btn:hover { border-color: var(--gold-dim); color: var(--gold); }
+  .btn.primary { background: var(--gold-dim); border-color: var(--gold-dim); color: #141414; font-weight: 600; }
+  .btn.primary:hover { background: var(--gold); color: #141414; }
+  .btn.danger { border-color: #5c2a2a; color: #ff8b85; }
+  .btn.danger:hover { border-color: var(--red); color: var(--red); }
+  .btn.small { padding: 2px 8px; font-size: 12px; }
+
+  /* ---------- offline banner ---------- */
+  #offline-banner {
+    display: none; padding: 8px 16px; background: #3a1418; color: #ff9d97;
+    border-bottom: 1px solid #5c2a2a; text-align: center;
+  }
+  #offline-banner.show { display: block; }
+
+  /* ---------- status strip ---------- */
+  #status-strip {
+    display: grid; gap: 10px; padding: 12px 16px 0;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+  .stat {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 12px;
+  }
+  .stat .label { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
+  .stat .value { font-size: 18px; font-family: var(--mono); margin-top: 2px; }
+  .stat .sub { font-size: 11px; color: var(--muted); }
+  .membar { height: 6px; background: #0b0d11; border-radius: 3px; margin-top: 6px; overflow: hidden; }
+  .membar > div { height: 100%; background: linear-gradient(90deg, var(--gold-dim), var(--gold)); }
+
+  /* ---------- charts row ---------- */
+  #charts-row {
+    display: grid; gap: 10px; padding: 12px 16px 0;
+    grid-template-columns: 1fr 1fr 1.2fr;
+  }
+  @media (max-width: 1100px) { #charts-row { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .card h3 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; }
+  .card h3 .cur { color: var(--gold); font-family: var(--mono); letter-spacing: 0; }
+  canvas.spark { width: 100%; height: 64px; display: block; }
+  #script-chips { display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 20px;
+    cursor: pointer; user-select: none;
+  }
+  .chip:hover { border-color: var(--gold-dim); }
+  .chip.active { border-color: var(--gold); color: var(--gold); }
+  .chip .swatch { width: 8px; height: 8px; border-radius: 50%; }
+  .chip .n { font-family: var(--mono); color: var(--muted); }
+  .chip.active .n { color: var(--gold); }
+
+  /* ---------- main content ---------- */
+  #content {
+    display: grid; gap: 10px; padding: 12px 16px 0;
+    grid-template-columns: minmax(340px, 42%) 1fr;
+    align-items: start;
+  }
+  @media (max-width: 1100px) { #content { grid-template-columns: 1fr; } }
+  #map-card { position: relative; }
+  #bot-map { width: 100%; height: 360px; display: block; cursor: crosshair; border-radius: 6px;
+    background:
+      repeating-linear-gradient(0deg, transparent 0 39px, #1a1f29 39px 40px),
+      repeating-linear-gradient(90deg, transparent 0 39px, #1a1f29 39px 40px),
+      #10131a; }
+  .map-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .map-tools .btn.active { border-color: var(--gold); color: var(--gold); }
+  .calib { display: none; gap: 2px; align-items: center; margin-left: auto; }
+  .calib.show { display: flex; }
+  .calib .lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-right: 2px; }
+  #map-tip {
+    position: fixed; z-index: 50; display: none; pointer-events: none;
+    background: #0b0d11; border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 9px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.5);
+  }
+  #map-tip .t-name { color: var(--gold); font-family: var(--mono); }
+  #map-tip .t-sub { color: var(--muted); }
+
+  /* ---------- table ---------- */
+  .table-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .table-tools input[type="text"], .table-tools select {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+  }
+  .table-tools label { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; cursor: pointer; }
+  #bot-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  #bot-table th {
+    position: sticky; top: 0; background: var(--panel);
+    text-align: left; padding: 6px 8px; color: var(--muted); font-weight: 600;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+    border-bottom: 1px solid var(--border); cursor: pointer; user-select: none;
+  }
+  #bot-table th:hover { color: var(--gold); }
+  #bot-table th .arrow { color: var(--gold); }
+  #bot-table td { padding: 5px 8px; border-bottom: 1px solid #1c222d; font-family: var(--mono); }
+  #bot-table td.scr { font-family: "Segoe UI", system-ui, sans-serif; }
+  #bot-table tbody tr { cursor: pointer; }
+  #bot-table tbody tr:hover { background: #1a1f29; }
+  #bot-table tbody tr.selected { background: #23201a; outline: 1px solid var(--gold-dim); }
+  #bot-table tbody tr.stuck-row td { background: rgba(248, 81, 73, .07); }
+  #bot-table tbody tr.stuck-row td:first-child { box-shadow: inset 3px 0 0 var(--red); }
+  .hp-cell { display: flex; align-items: center; gap: 7px; }
+  .hp-bar { width: 52px; height: 6px; background: #0b0d11; border-radius: 3px; overflow: hidden; flex: none; }
+  .hp-bar > div { height: 100%; }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10.5px;
+    font-family: "Segoe UI", system-ui, sans-serif; font-weight: 600; }
+  .badge.stuck { background: rgba(248,81,73,.15); color: var(--red); }
+  .badge.afk { background: rgba(125,135,152,.15); color: var(--muted); }
+  .empty-note { color: var(--muted); text-align: center; padding: 18px 0; }
+
+  /* ---------- spawn panel ---------- */
+  #spawn-panel { display: none; margin: 12px 16px 0; }
+  #spawn-panel.open { display: block; }
+  #spawn-panel .grid {
+    display: grid; gap: 10px 14px; margin-top: 8px;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); align-items: end;
+  }
+  .field label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px;
+    text-transform: uppercase; letter-spacing: .5px; }
+  .field input, .field select {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 8px;
+  }
+  .field input:focus, .field select:focus { outline: none; border-color: var(--gold-dim); }
+  .field .hint { font-size: 11px; color: var(--muted); margin-top: 3px; min-height: 14px; }
+  #spawn-preview { font-family: var(--mono); font-size: 11.5px; color: var(--green);
+    background: #0b0d11; border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; }
+  .radio-row { display: flex; gap: 12px; }
+  .radio-row label { display: flex; gap: 5px; align-items: center; cursor: pointer; color: var(--text); }
+
+  /* ---------- drawer ---------- */
+  #drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(480px, 92vw); z-index: 40;
+    background: var(--panel); border-left: 1px solid var(--border);
+    transform: translateX(100%); transition: transform .18s ease;
+    display: flex; flex-direction: column; box-shadow: -8px 0 30px rgba(0,0,0,.5);
+  }
+  #drawer.open { transform: translateX(0); }
+  /* Wide screens: slide page content left instead of covering the header controls. */
+  @media (min-width: 1101px) {
+    body.drawer-open { padding-right: 480px; }
+  }
+  .drawer-head {
+    display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+    border-bottom: 1px solid var(--border); background: var(--panel-2);
+  }
+  .drawer-head .bot-name { font-family: var(--mono); font-size: 15px; color: var(--gold); }
+  .drawer-head .bot-type { color: var(--muted); font-size: 12px; }
+  .drawer-body { overflow-y: auto; padding: 12px 16px; flex: 1; }
+  .drawer-sec { margin-bottom: 16px; }
+  .drawer-sec > h4 {
+    margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 4px;
+  }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-family: var(--mono); word-break: break-word; }
+  .goal-box {
+    font-family: var(--mono); font-size: 12px; background: #0b0d11; border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 9px; word-break: break-word;
+  }
+  .inv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
+  .inv-item { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 8px; font-size: 12px; }
+  .inv-item .amt { color: var(--muted); font-family: var(--mono); }
+  .inv-item .val { color: var(--gold); font-family: var(--mono); font-size: 11px; }
+  .sec-val { font-family: var(--mono); color: var(--gold); }
+
+  #event-log {
+    font-family: var(--mono); font-size: 11.5px; background: #0b0d11;
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px;
+    height: 260px; overflow-y: auto;
+  }
+  #event-log .ev { padding: 1px 4px; white-space: pre-wrap; word-break: break-word; }
+  #event-log .ev .t { color: #4d5769; }
+  .ev.SPAWN     .ty { color: #8b93a7; }
+  .ev.STATE     .ty { color: var(--blue); }
+  .ev.INTERACT  .ty { color: var(--green); }
+  .ev.TELEPORT  .ty { color: var(--purple); }
+  .ev.DEATH     .ty { color: var(--red); font-weight: 700; }
+  .ev.DEATH     { background: rgba(248,81,73,.08); }
+  .log-tools { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .log-tools label { color: var(--muted); font-size: 12px; display: flex; gap: 4px; align-items: center; cursor: pointer; }
+
+  .action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .teleport-row, .give-row { display: flex; gap: 6px; align-items: center; }
+  .teleport-row input, .give-row input {
+    width: 68px; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 6px; font-family: var(--mono); font-size: 12px;
+  }
+  .action-cell { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .action-cell .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+
+  /* ---------- toasts ---------- */
+  #toasts { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: flex;
+    flex-direction: column; gap: 8px; max-width: 380px; }
+  .toast {
+    background: var(--panel-2); border: 1px solid var(--border); border-left: 3px solid var(--green);
+    border-radius: 6px; padding: 9px 13px; box-shadow: 0 6px 18px rgba(0,0,0,.5); cursor: pointer;
+    animation: slide-in .18s ease;
+  }
+  .toast.error { border-left-color: var(--red); }
+  .toast .t-title { font-weight: 600; }
+  .toast .t-msg { font-size: 12px; color: var(--muted); word-break: break-word; }
+  @keyframes slide-in { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+</style>
+</head>
+<body>
+
+<div id="offline-banner">
+  Game server unreachable on 127.0.0.1:8456 — is the world running with telemetry enabled?
+  Retrying every few seconds…
+</div>
+
+<header>
+  <h1><span class="gold">Landsraad</span> Bot Control Panel</h1>
+  <div class="conn"><span class="dot" id="conn-dot"></span><span id="conn-text">connecting…</span></div>
+  <span class="hdr-note" id="hdr-note"></span>
+  <div class="spacer"></div>
+  <button class="btn" id="btn-pause" title="Pause/resume all auto-refresh">Pause</button>
+  <button class="btn" id="btn-refresh" title="Refresh now">Refresh</button>
+  <button class="btn primary" id="btn-spawn-toggle">Spawn bot</button>
+</header>
+
+<!-- ======================= spawn panel ======================= -->
+<section id="spawn-panel" class="card">
+  <h3>Spawn a bot <span style="letter-spacing:0;text-transform:none">POST /api/bots/spawn</span></h3>
+  <div class="grid">
+    <div class="field">
+      <label>Script</label>
+      <select id="sp-script"></select>
+      <div class="hint" id="sp-script-hint"></div>
+    </div>
+    <div class="field" id="sp-body-kind-field">
+      <label>Body kind</label>
+      <div class="radio-row">
+        <label><input type="radio" name="sp-kind" value="combat" checked> Combat</label>
+        <label><input type="radio" name="sp-kind" value="skilling"> Skilling</label>
+      </div>
+      <div class="hint">Keys sent decide the assembler path server-side</div>
+    </div>
+    <div class="field" id="sp-style-field">
+      <label>Style</label>
+      <select id="sp-style"></select>
+    </div>
+    <div class="field" id="sp-tier-field">
+      <label>Tier</label>
+      <select id="sp-tier">
+        <option>LOW</option><option>MED</option><option>HIGH</option><option>PURE</option>
+      </select>
+    </div>
+    <div class="field" id="sp-wealth-field" style="display:none">
+      <label>Wealth</label>
+      <select id="sp-wealth">
+        <option>POOR</option><option selected>AVERAGE</option><option>RICH</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Location (blank = Lumbridge)</label>
+      <div class="teleport-row">
+        <input type="number" id="sp-x" placeholder="x">
+        <input type="number" id="sp-y" placeholder="y">
+        <input type="number" id="sp-z" placeholder="z" value="0">
+      </div>
+    </div>
+    <div class="field">
+      <label>&nbsp;</label>
+      <button class="btn primary" id="sp-go" style="width:100%">Spawn</button>
+    </div>
+  </div>
+  <div style="margin-top:10px"><div id="spawn-preview"></div></div>
+</section>
+
+<!-- ======================= status strip ======================= -->
+<div id="status-strip">
+  <div class="stat"><div class="label">Uptime</div><div class="value" id="st-uptime">—</div>
+    <div class="sub" id="st-uptime-sub"></div></div>
+  <div class="stat"><div class="label">Game ticks</div><div class="value" id="st-ticks">—</div>
+    <div class="sub" id="st-tick-rate"></div></div>
+  <div class="stat"><div class="label">Last cycle</div><div class="value" id="st-cycle">—</div>
+    <div class="sub" id="st-ema">EMA —</div></div>
+  <div class="stat"><div class="label">Online</div><div class="value" id="st-online">—</div>
+    <div class="sub" id="st-world"></div></div>
+  <div class="stat"><div class="label">Scheduler</div><div class="value" id="st-cap">—</div>
+    <div class="sub" id="st-pulses"></div></div>
+  <div class="stat"><div class="label">JVM memory</div><div class="value" id="st-mem">—</div>
+    <div class="membar"><div id="st-membar" style="width:0%"></div></div>
+    <div class="sub" id="st-threads"></div></div>
+</div>
+
+<!-- ======================= charts row ======================= -->
+<div id="charts-row">
+  <div class="card"><h3>Cycle duration <span class="cur" id="cycle-cur">—</span></h3>
+    <canvas class="spark" id="spark-cycle"></canvas></div>
+  <div class="card"><h3>Bots online <span class="cur" id="bots-cur">—</span></h3>
+    <canvas class="spark" id="spark-bots"></canvas></div>
+  <div class="card"><h3>Bots by script <span class="cur" id="stuck-cur"></span></h3>
+    <div id="script-chips"></div></div>
+</div>
+
+<!-- ======================= main content ======================= -->
+<div id="content">
+  <div class="card" id="map-card">
+    <h3 style="display:block">
+      <div class="map-tools">
+        <span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.8px">Bot locations</span>
+        <button class="btn small active" id="map-world">2009 world map</button>
+        <button class="btn small" id="map-auto">Auto-fit</button>
+        <button class="btn small" id="map-whole" title="Zoom out to the whole world">Whole world</button>
+        <button class="btn small" id="map-fit" title="Fit view to bots">Fit</button>
+        <span class="calib" id="map-calib">
+          <span class="lbl">nudge</span>
+          <button class="btn small" data-nudge="x-1">◀</button>
+          <button class="btn small" data-nudge="x+1">▶</button>
+          <button class="btn small" data-nudge="y-1">▲</button>
+          <button class="btn small" data-nudge="y+1">▼</button>
+          <button class="btn small" data-nudge="reset" title="Reset calibration offsets">↺</button>
+        </span>
+      </div>
+    </h3>
+    <canvas id="bot-map"></canvas>
+    <div id="map-tip"></div>
+  </div>
+
+  <div class="card">
+    <h3>Bots <span class="cur" id="bot-count"></span></h3>
+    <div class="table-tools">
+      <input type="text" id="flt-search" placeholder="Search name…">
+      <select id="flt-script"><option value="">All scripts</option></select>
+      <label><input type="checkbox" id="flt-stuck"> Stuck only</label>
+      <div class="spacer" style="flex:1"></div>
+      <span class="hdr-note" id="last-update"></span>
+    </div>
+    <div style="max-height: 430px; overflow-y: auto">
+      <table id="bot-table">
+        <thead><tr>
+          <th data-k="name">Name <span class="arrow"></span></th>
+          <th data-k="script">Script <span class="arrow"></span></th>
+          <th data-k="x">Location <span class="arrow"></span></th>
+          <th data-k="hp_percent">HP <span class="arrow"></span></th>
+          <th data-k="ticks_since_state_change">ΔState <span class="arrow"></span></th>
+          <th data-k="ticks_since_tile_change">ΔTile <span class="arrow"></span></th>
+          <th data-k="stuck">Status <span class="arrow"></span></th>
+        </tr></thead>
+        <tbody id="bot-tbody"></tbody>
+      </table>
+      <div class="empty-note" id="table-empty" style="display:none">No bots match the current filters.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= drawer ======================= -->
+<aside id="drawer">
+  <div class="drawer-head">
+    <div style="flex:1">
+      <div class="bot-name" id="dw-name">—</div>
+      <div class="bot-type" id="dw-type">—</div>
+    </div>
+    <button class="btn small" id="dw-close">Close ✕</button>
+  </div>
+  <div class="drawer-body">
+
+    <div class="drawer-sec">
+      <h4>Current goal</h4>
+      <div class="goal-box" id="dw-goal">—</div>
+      <div class="kv" style="margin-top:8px">
+        <span class="k">HP</span><span class="v" id="dw-hp">—</span>
+        <span class="k">XP / hour</span><span class="v" id="dw-xp">—</span>
+        <span class="k">Location</span><span class="v" id="dw-loc">—</span>
+        <span class="k">Since state / tile change</span><span class="v" id="dw-ages">—</span>
+      </div>
+    </div>
+
+    <div class="drawer-sec">
+      <h4>Activity</h4>
+      <div class="kv">
+        <span class="k">Combat target</span><span class="v" id="dw-combat">—</span>
+        <span class="k">Interacting with</span><span class="v" id="dw-interact">—</span>
+        <span class="k">Pathing →</span><span class="v" id="dw-pathing">—</span>
+        <span class="k">GE offer</span><span class="v" id="dw-ge">—</span>
+        <span class="k">Ground items held</span><span class="v" id="dw-ground">—</span>
+      </div>
+    </div>
+
+    <div class="drawer-sec">
+      <h4>Inventory <span class="sec-val" id="dw-inv-value"></span></h4>
+      <div class="inv-grid" id="dw-inventory"></div>
+    </div>
+
+    <div class="drawer-sec">
+      <h4>Equipment</h4>
+      <div class="inv-grid" id="dw-equipment"></div>
+    </div>
+
+    <div class="drawer-sec">
+      <h4>Event log</h4>
+      <div class="log-tools">
+        <label><input type="checkbox" id="ev-autoscroll" checked> Auto-scroll</label>
+        <label><input type="checkbox" id="ev-follow" checked> Live</label>
+        <button class="btn small" id="ev-clear">Clear view</button>
+      </div>
+      <div id="event-log"></div>
+    </div>
+
+    <div class="drawer-sec">
+      <h4>Actions</h4>
+      <div class="action-grid">
+        <div class="action-cell">
+          <span class="lbl">Chaos</span>
+          <button class="btn danger small" id="ac-kill">Kill</button>
+          <button class="btn small" id="ac-clear-inv">Clear inventory</button>
+        </div>
+        <div class="action-cell">
+          <span class="lbl">Teleport</span>
+          <div class="teleport-row">
+            <input type="number" id="tp-x" placeholder="x"><input type="number" id="tp-y" placeholder="y"><input type="number" id="tp-z" placeholder="z" value="0">
+          </div>
+          <button class="btn small" id="ac-teleport">Teleport</button>
+        </div>
+        <div class="action-cell">
+          <span class="lbl">Give item</span>
+          <div class="give-row">
+            <input type="number" id="gi-id" placeholder="item id"><input type="number" id="gi-amt" placeholder="amt" value="1">
+          </div>
+          <button class="btn small" id="ac-give">Give</button>
+        </div>
+        <div class="action-cell">
+          <span class="lbl">Remove</span>
+          <button class="btn danger small" id="ac-delete">Delete bot</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</aside>
+
+<div id="toasts"></div>
+
+<script>
+"use strict";
+
+/* =====================================================================
+ * Bot control panel — talks same-origin to /api/* which bot_ui_server.py
+ * proxies to the game server's TelemetryServer on 127.0.0.1:8456.
+ * Field names below match TelemetryServer.kt exactly (snake_case).
+ * ===================================================================== */
+
+const POLL_MS = 2000;
+const HISTORY_MAX = 300;   // ~10 minutes of samples at 2s
+const TABLE_ROW_CAP = 300; // DOM rows rendered per refresh; filters narrow below this
+
+/* map.webp (Dec 2009 world map) tile<->pixel calibration. Solved by
+ * least-squares over region-label positions (Asgarnia, Misthalin, Kandarin,
+ * Tirannwn, Feldip Hills, Miscellania, Lunar Isle, Kharidian Desert, Crandor);
+ * verified against live bot clusters (Draynor/Catherby/Al Kharid/GE all land
+ * on their cities). Offsets are user-nudgable and persisted. */
+const WORLD_MAP = {
+  pxPerTileX: 1.96378,
+  pxPerTileY: 2.04242,
+  originPxX: -3346.81,   // px = pxPerTileX*tx + originPxX + offsetX
+  originPxY: 8569.48,    // py = originPxY - pxPerTileY*ty + offsetY
+  imgW: 4476, imgH: 3584,
+};
+const mapState = {
+  mode: "world",        // "world" | "auto"
+  wholeWorld: false,
+  img: null,
+  view: null,           // {x0,x1,y0,y1} tile viewport; null = auto-fit each poll
+  dragging: false,
+  offsetX: parseFloat(localStorage.getItem("wmOffX") || "0"),
+  offsetY: parseFloat(localStorage.getItem("wmOffY") || "0"),
+};
+{
+  const img = new Image();
+  img.onload = () => { mapState.img = img; drawMap(); };
+  img.src = "map.webp";
+}
+function mapTileBounds() {
+  const m = WORLD_MAP;
+  return {
+    x0: (0 - m.originPxX - mapState.offsetX) / m.pxPerTileX,
+    x1: (m.imgW - m.originPxX - mapState.offsetX) / m.pxPerTileX,
+    y0: (m.originPxY + mapState.offsetY - m.imgH) / m.pxPerTileY,
+    y1: (m.originPxY + mapState.offsetY - 0) / m.pxPerTileY,
+  };
+}
+
+const state = {
+  paused: false,
+  offline: false,
+  server: null,
+  perf: null,
+  bots: [],
+  scripts: [],
+  scriptsLoaded: false,
+  selected: null,          // bot name shown in the drawer
+  detail: null,
+  eventCursor: 0,
+  eventsUntracked: false,
+  history: { cycle: [], bots: [] },
+  prevTicks: null, prevTickTime: null,
+  sortKey: "name", sortAsc: true,
+  filter: { search: "", script: "", stuckOnly: false },
+  mapHits: [],             // screen-space bot dots for hover/click
+  mapColors: {},           // script name -> css color
+  colorWheel: 0,
+};
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+/* ---------------- formatting helpers ---------------- */
+function fmtInt(n) {
+  return (n === null || n === undefined || isNaN(n)) ? "—" :
+    Number(n).toLocaleString("en-US");
+}
+function fmtGp(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(n);
+}
+function fmtDuration(ms) {
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600),
+        m = Math.floor((s % 3600) / 60), sec = s % 60;
+  if (d > 0) return d + "d " + h + "h " + m + "m";
+  if (h > 0) return h + "h " + m + "m " + sec + "s";
+  return m + "m " + sec + "s";
+}
+function locStr(l) { return l ? `(${l.x}, ${l.y}, ${l.z})` : "—"; }
+function scriptColor(name) {
+  if (!state.mapColors[name]) {
+    // Deterministic spread around the wheel, offset from gold to keep the accent distinct.
+    const hue = (state.colorWheel++ * 47 + 200) % 360;
+    state.mapColors[name] = `hsl(${hue}, 62%, 62%)`;
+  }
+  return state.mapColors[name];
+}
+
+/* ---------------- api helper ---------------- */
+async function api(path, init) {
+  let res;
+  try {
+    res = await fetch(path, init);
+  } catch (e) {
+    setOffline(true);
+    throw { offline: true };
+  }
+  if (res.status === 502) { setOffline(true); throw { offline: true }; }
+  setOffline(false);
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* non-JSON body */ }
+  return { status: res.status, ok: res.ok, data };
+}
+function apiPost(path, body) {
+  return api(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+function setOffline(off) {
+  if (state.offline === off) return;
+  state.offline = off;
+  $("offline-banner").classList.toggle("show", off);
+  $("conn-dot").className = "dot" + (off ? "" : " on");
+  $("conn-text").textContent = off ? "server offline" : "connected";
+}
+
+/* ---------------- toasts ---------------- */
+function toast(title, msg, isError) {
+  const el = document.createElement("div");
+  el.className = "toast" + (isError ? " error" : "");
+  el.innerHTML = `<div class="t-title">${esc(title)}</div>` +
+    (msg ? `<div class="t-msg">${esc(msg)}</div>` : "");
+  el.onclick = () => el.remove();
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), 5000);
+}
+
+/* =====================================================================
+ * Poll loop
+ * ===================================================================== */
+async function pollAll() {
+  const jobs = [
+    api("/api/server"),
+    api("/api/server/performance"),
+    api("/api/bots"),
+    state.scriptsLoaded ? null : api("/api/scripts"),
+  ];
+  if (state.selected) {
+    jobs.push(api(`/api/bots/${encodeURIComponent(state.selected)}`));
+    if ($("ev-follow").checked && !state.eventsUntracked) {
+      jobs.push(api(`/api/bots/${encodeURIComponent(state.selected)}/events?since=${state.eventCursor}`));
+    }
+  }
+  const [srv, perf, bots, scripts, detail, events] = await Promise.all(jobs.map(
+    (j) => j ? j.catch((e) => e.offline ? null : { failed: true, error: e }) : null));
+
+  let anyOk = false;
+  if (srv && srv.ok) { state.server = srv.data; anyOk = true; sampleHistory(); }
+  if (perf && perf.ok) { state.perf = perf.data; anyOk = true; }
+  if (bots && bots.ok) { state.bots = bots.data.bots || []; anyOk = true; }
+  if (scripts && scripts.ok) { state.scripts = scripts.data.scripts || []; state.scriptsLoaded = true; buildSpawnPanel(); }
+  if (srv && srv.status === 503) { $("hdr-note").innerHTML = "<b>game thread busy</b> (503 — retrying)"; }
+  else if (!state.offline) { $("hdr-note").textContent = ""; }
+
+  if (detail) {
+    if (detail.ok) { state.detail = detail.data; anyOk = true; }
+    else if (detail.status === 404) { toast("Bot gone", `${state.selected} no longer exists`, true); closeDrawer(); }
+    // 503 etc: keep last known detail
+  }
+  if (events) {
+    if (events.ok) {
+      state.eventsUntracked = false;
+      for (const ev of events.data.events || []) appendEvent(ev);
+      state.eventCursor = events.data.next_cursor || state.eventCursor;
+    } else if (events.status === 404) {
+      state.eventsUntracked = true;
+      const log = $("event-log");
+      if (log.dataset.untracked !== "1") {
+        log.dataset.untracked = "1";
+        log.innerHTML = `<div class="ev"><span class="t">—</span> only scripted bots are tracked (AFK bodies have no events)</div>`;
+      }
+    }
+  }
+
+  if (anyOk || state.bots.length) {
+    renderStatus(); renderChips(); renderTable(); drawMap(); renderDrawer(); updateScriptFilter();
+  }
+  $("last-update").textContent = "updated " + new Date().toLocaleTimeString();
+}
+
+function sampleHistory() {
+  const s = state.server;
+  state.history.cycle.push(s.last_cycle_duration_ms);
+  state.history.bots.push(s.bots_online);
+  if (state.history.cycle.length > HISTORY_MAX) state.history.cycle.shift();
+  if (state.history.bots.length > HISTORY_MAX) state.history.bots.shift();
+  // Rough live tick rate from tick deltas between polls.
+  const now = Date.now();
+  if (state.prevTicks !== null && s.ticks > state.prevTicks && state.prevTickTime) {
+    const dt = (now - state.prevTickTime) / 1000;
+    const tps = (s.ticks - state.prevTicks) / dt;
+    $("st-tick-rate").textContent = tps.toFixed(2) + " ticks/s target 0.6";
+  }
+  state.prevTicks = s.ticks; state.prevTickTime = now;
+}
+
+async function pollLoop() {
+  for (;;) {
+    if (!state.paused) {
+      try { await pollAll(); } catch (e) { if (!e.offline) console.error(e); }
+    }
+    await new Promise((r) => setTimeout(r, POLL_MS));
+  }
+}
+
+/* =====================================================================
+ * Status strip
+ * ===================================================================== */
+function renderStatus() {
+  const s = state.server;
+  if (s) {
+    $("st-uptime").textContent = fmtDuration(s.uptime_ms);
+    $("st-uptime-sub").textContent = "since " + new Date(Date.now() - s.uptime_ms).toLocaleString();
+    $("st-ticks").textContent = fmtInt(s.ticks);
+    $("st-cycle").textContent = s.last_cycle_duration_ms + " ms";
+    $("st-cycle").style.color = s.last_cycle_duration_ms > 500 ? "var(--orange)" : "";
+    $("st-online").innerHTML =
+      `<span style="color:var(--green)">${fmtInt(s.players_online)}</span> players · ` +
+      `<span style="color:var(--gold)">${fmtInt(s.bots_online)}</span> bots`;
+    $("st-world").textContent = "world " + s.world_id;
+    const j = s.jvm;
+    $("st-mem").textContent = `${fmtInt(j.used_memory_mb)} / ${fmtInt(j.total_memory_mb)} MB`;
+    $("st-membar").style.width = (j.total_memory_mb ? (j.used_memory_mb / j.total_memory_mb * 100) : 0) + "%";
+    $("st-threads").textContent = "max " + fmtInt(j.max_memory_mb) + " MB · " + j.thread_count + " threads";
+  }
+  const p = state.perf;
+  if (p) {
+    $("st-cap").textContent = fmtInt(p.bot_script_cap);
+    $("st-pulses").textContent = p.bot_pulses_triggered_this_tick + " pulses this tick · " +
+      fmtInt(p.registered_scripted_bots) + " scripted";
+    $("st-ema").textContent = "EMA " + p.smoothed_cycle_time_ms.toFixed(1) + " ms";
+  }
+}
+
+/* =====================================================================
+ * Sparklines
+ * ===================================================================== */
+function drawSpark(canvas, values, color, fmt) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  if (!values || values.length < 2) {
+    ctx.fillStyle = "#4d5769"; ctx.font = "11px sans-serif";
+    ctx.fillText("collecting…", 6, h / 2);
+    return;
+  }
+  const min = Math.min(...values), max = Math.max(...values);
+  const span = (max - min) || 1;
+  const px = (i) => (i / (values.length - 1)) * (w - 4) + 2;
+  const py = (v) => h - 4 - ((v - min) / span) * (h - 10);
+  ctx.beginPath();
+  values.forEach((v, i) => i ? ctx.lineTo(px(i), py(v)) : ctx.moveTo(px(i), py(v)));
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.lineTo(px(values.length - 1), h); ctx.lineTo(px(0), h); ctx.closePath();
+  ctx.fillStyle = color + "22"; ctx.fill();
+  // end dot + min/max labels
+  const lastX = px(values.length - 1), lastY = py(values[values.length - 1]);
+  ctx.beginPath(); ctx.arc(lastX, lastY, 2.5, 0, Math.PI * 2);
+  ctx.fillStyle = color; ctx.fill();
+  ctx.fillStyle = "#7d8798"; ctx.font = "10px monospace";
+  ctx.fillText(fmt ? fmt(max) : max, 4, 10);
+  ctx.fillText(fmt ? fmt(min) : min, 4, h - 3);
+}
+function renderChips() {
+  drawSpark($("spark-cycle"), state.history.cycle, "#e8c55a", (v) => v.toFixed(0) + "ms");
+  drawSpark($("spark-bots"), state.history.bots, "#3fb950");
+  $("cycle-cur").textContent = state.history.cycle.length ?
+    state.history.cycle[state.history.cycle.length - 1] + " ms" : "—";
+  $("bots-cur").textContent = state.server ? state.server.bots_online : "—";
+
+  const byScript = {};
+  for (const b of state.bots) byScript[b.script] = (byScript[b.script] || 0) + 1;
+  const stuck = state.bots.filter((b) => b.stuck).length;
+  $("stuck-cur").innerHTML = stuck ?
+    `<span style="color:var(--red)">${stuck} stuck</span>` : "none stuck";
+  const wrap = $("script-chips");
+  wrap.innerHTML = "";
+  for (const [name, n] of Object.entries(byScript).sort((a, b) => b[1] - a[1])) {
+    const chip = document.createElement("span");
+    chip.className = "chip" + (state.filter.script === name ? " active" : "");
+    chip.innerHTML = `<span class="swatch" style="background:${scriptColor(name)}"></span>` +
+      `${esc(name)} <span class="n">×${n}</span>`;
+    chip.onclick = () => {
+      state.filter.script = state.filter.script === name ? "" : name;
+      $("flt-script").value = state.filter.script;
+      renderChips(); renderTable();
+    };
+    wrap.appendChild(chip);
+  }
+}
+
+/* =====================================================================
+ * Bot map
+ * ===================================================================== */
+function drawMap() {
+  const canvas = $("bot-map");
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  state.mapHits = [];
+  const bots = visibleBots();
+  if (!bots.length) {
+    ctx.fillStyle = "#4d5769"; ctx.font = "12px sans-serif";
+    ctx.fillText("no bots to plot", 12, 24);
+    return;
+  }
+
+  // ---- view bounds in tile space ----
+  // Instanced bots (POH/random events) use shifted coordinates far outside the
+  // world (e.g. y~8500) and would blow the bounds, so fit to near-median bots.
+  const xs = bots.map((b) => b.location.x).sort((a, b) => a - b);
+  const ys = bots.map((b) => b.location.y).sort((a, b) => a - b);
+  const medX = xs[Math.floor(xs.length / 2)], medY = ys[Math.floor(ys.length / 2)];
+  const inWorld = bots.filter((b) =>
+    Math.abs(b.location.x - medX) < 600 && Math.abs(b.location.y - medY) < 600);
+  const boundsBots = inWorld.length ? inWorld : bots;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const b of boundsBots) {
+    minX = Math.min(minX, b.location.x); maxX = Math.max(maxX, b.location.x);
+    minY = Math.min(minY, b.location.y); maxY = Math.max(maxY, b.location.y);
+  }
+  const world = mapState.mode === "world" && mapState.img;
+  let bx0 = minX, bx1 = maxX, by0 = minY, by1 = maxY;
+  if (world && mapState.wholeWorld) {
+    const mb = mapTileBounds();
+    bx0 = Math.min(bx0, mb.x0); bx1 = Math.max(bx1, mb.x1);
+    by0 = Math.min(by0, mb.y0); by1 = Math.max(by1, mb.y1);
+  }
+  if (!mapState.view) {
+    // Fill the frame: expand the default view to the canvas aspect ratio so
+    // the map covers the whole canvas instead of letterboxing. Expansion only
+    // adds margin around the bots — it never crops them — and stops at the
+    // world bounds.
+    const mbA = mapTileBounds();
+    const aspect = w / h;
+    const growX = (want) => {
+      const add = (want - (bx1 - bx0)) / 2;
+      bx0 = Math.max(mbA.x0, bx0 - add); bx1 = Math.min(mbA.x1, bx1 + add);
+    };
+    const growY = (want) => {
+      const add = (want - (by1 - by0)) / 2;
+      by0 = Math.max(mbA.y0, by0 - add); by1 = Math.min(mbA.y1, by1 + add);
+    };
+    if ((bx1 - bx0) / (by1 - by0) < aspect) {
+      growX(Math.min((by1 - by0) * aspect, mbA.x1 - mbA.x0));
+      growY(Math.min((bx1 - bx0) / aspect, mbA.y1 - mbA.y0));
+    } else {
+      growY(Math.min((bx1 - bx0) / aspect, mbA.y1 - mbA.y0));
+      growX(Math.min((by1 - by0) * aspect, mbA.x1 - mbA.x0));
+    }
+  }
+  if (!mapState.view) mapState.view = { x0: bx0, x1: bx1, y0: by0, y1: by1 };
+  // A user-set view stays until reset; clamp it to the world so panning
+  // can't wander into endless ocean.
+  const mb0 = mapTileBounds();
+  const clampMid = (v0, v1, lo, hi) => {
+    const mid = (v0 + v1) / 2, span = v1 - v0;
+    const c = Math.max(lo + span / 2 - 150, Math.min(hi - span / 2 + 150, mid));
+    return [c - span / 2, c + span / 2];
+  };
+  [bx0, bx1] = clampMid(mapState.view.x0, mapState.view.x1, mb0.x0, mb0.x1);
+  [by0, by1] = clampMid(mapState.view.y0, mapState.view.y1, mb0.y0, mb0.y1);
+  mapState.view = { x0: bx0, x1: bx1, y0: by0, y1: by1 };
+  const pad = 28;
+  const spanX = (bx1 - bx0) || 1, spanY = (by1 - by0) || 1;
+  const scale = Math.min((w - pad * 2) / spanX, (h - pad * 2) / spanY);
+  const tx2sx = (tx) => pad + (tx - bx0) * scale + (w - pad * 2 - spanX * scale) / 2;
+  const ty2sy = (ty) => h - (pad + (ty - by0) * scale + (h - pad * 2 - spanY * scale) / 2);
+
+  // ---- background: 2009 world map (draw the matching sub-rectangle) ----
+  if (world) {
+    const m = WORLD_MAP;
+    const toPxX = (tx) => (m.pxPerTileX * tx + m.originPxX + mapState.offsetX);
+    const toPxY = (ty) => (m.originPxY + mapState.offsetY - m.pxPerTileY * ty);
+    const sx0 = Math.max(0, toPxX(bx0)), sy0 = Math.max(0, toPxY(by1));
+    const sx1 = Math.min(m.imgW, toPxX(bx1)), sy1 = Math.min(m.imgH, toPxY(by0));
+    if (sx1 > sx0 && sy1 > sy0) {
+      // destination rect for the same geographic window as the plot area.
+      // Source y grows south in the image while tile y grows north, so the
+      // top of the source rect (sy0) corresponds to the HIGHEST tile.
+      const tileAtPxY = (py) => (m.originPxY + mapState.offsetY - py) / m.pxPerTileY;
+      const dx0 = tx2sx(bx0 + (sx0 - toPxX(bx0)) / m.pxPerTileX);
+      const dx1 = tx2sx(bx0 + (sx1 - toPxX(bx0)) / m.pxPerTileX);
+      const dyTop = ty2sy(tileAtPxY(sy0));
+      const dyBottom = ty2sy(tileAtPxY(sy1));
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(mapState.img, sx0, sy0, sx1 - sx0, sy1 - sy0,
+        dx0, dyTop, dx1 - dx0, dyBottom - dyTop);
+    }
+  } else {
+    // auto-fit grid background stays from CSS
+  }
+
+  const radius = bots.length > 500 ? 2 : bots.length > 200 ? 3 : 5;
+  const ringR = radius + 4;
+  for (const b of bots) {
+    const sx = tx2sx(b.location.x);
+    // RuneScape y grows north; canvas y grows down, so flip.
+    const sy = ty2sy(b.location.y);
+    const color = scriptColor(b.script);
+    if (b.stuck) {
+      ctx.beginPath(); ctx.arc(sx, sy, ringR, 0, Math.PI * 2);
+      ctx.strokeStyle = "#f85149"; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+    ctx.fillStyle = b.script === "AFK" ? "#7d8798" : color; ctx.fill();
+    if (state.selected && b.name === state.selected) {
+      ctx.beginPath(); ctx.arc(sx, sy, ringR, 0, Math.PI * 2);
+      ctx.strokeStyle = "#e8c55a"; ctx.lineWidth = 2; ctx.stroke();
+    }
+    state.mapHits.push({ sx, sy, bot: b });
+  }
+  // scale annotation
+  ctx.fillStyle = "#4d5769"; ctx.font = "10px monospace";
+  const spanXv = Math.round(bx1 - bx0);
+  ctx.fillText(`x ${Math.round(bx0)}–${Math.round(bx1)}  y ${Math.round(by0)}–${Math.round(by1)}` +
+    `  ·  ~${spanXv} tiles across  ·  ${world ? (mapState.wholeWorld ? "whole world" : "world map") : "auto-fit"}` +
+    (world ? "  ·  wheel zoom, drag pan" : ""), 8, h - 6);
+  mapState._transform = { bx0, by0, scale, spanX, spanY, w, h, pad };
+}
+// ---- map mode controls ----
+function setMapMode(mode) {
+  mapState.mode = mode;
+  mapState.view = null;
+  $("map-world").classList.toggle("active", mode === "world");
+  $("map-auto").classList.toggle("active", mode === "auto");
+  $("map-calib").classList.toggle("show", mode === "world");
+  drawMap();
+}
+$("map-world").onclick = () => setMapMode("world");
+$("map-auto").onclick = () => setMapMode("auto");
+$("map-whole").onclick = () => { mapState.wholeWorld = true; mapState.view = null; drawMap(); };
+$("map-fit").onclick = () => { mapState.wholeWorld = false; mapState.view = null; drawMap(); };
+document.querySelectorAll(".calib [data-nudge]").forEach((btn) => {
+  btn.onclick = () => {
+    const op = btn.dataset.nudge;
+    if (op === "reset") { mapState.offsetX = 0; mapState.offsetY = 0; }
+    else {
+      const step = 4; // map px per click (~2 tiles)
+      if (op === "x-1") mapState.offsetX -= step;
+      if (op === "x+1") mapState.offsetX += step;
+      if (op === "y-1") mapState.offsetY -= step;
+      if (op === "y+1") mapState.offsetY += step;
+    }
+    localStorage.setItem("wmOffX", String(mapState.offsetX));
+    localStorage.setItem("wmOffY", String(mapState.offsetY));
+    drawMap();
+  };
+});
+function mapBotAt(ev) {
+  const rect = $("bot-map").getBoundingClientRect();
+  const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+  let best = null, bestD = 12;
+  for (const hit of state.mapHits) {
+    const d = Math.hypot(hit.sx - mx, hit.sy - my);
+    if (d < bestD) { bestD = d; best = hit; }
+  }
+  return best;
+}
+// ---- zoom & pan ----
+function screenToTile(mx, my) {
+  const t = mapState._transform;
+  if (!t) return null;
+  return {
+    x: t.bx0 + (mx - t.pad - (t.w - t.pad * 2 - t.spanX * t.scale) / 2) / t.scale,
+    y: t.by0 + (t.h - t.pad - my -
+      (t.h - t.pad * 2 - t.spanY * t.scale) / 2) / t.scale,
+  };
+}
+function zoomAt(mx, my, factor) {
+  const v = mapState.view, t = mapState._transform;
+  if (!v || !t) return;
+  const tile = screenToTile(mx, my);
+  if (!tile) return;
+  let nx0 = tile.x - (tile.x - v.x0) / factor;
+  let nx1 = tile.x + (v.x1 - tile.x) / factor;
+  let ny0 = tile.y - (tile.y - v.y0) / factor;
+  let ny1 = tile.y + (v.y1 - tile.y) / factor;
+  const mb = mapTileBounds();
+  const MIN_SPAN = 20;
+  if (nx1 - nx0 < MIN_SPAN || ny1 - ny0 < MIN_SPAN) return; // max zoom-in
+  if (nx1 - nx0 > (mb.x1 - mb.x0) * 1.05 || ny1 - ny0 > (mb.y1 - mb.y0) * 1.05) return;
+  mapState.view = { x0: nx0, x1: nx1, y0: ny0, y1: ny1 };
+  drawMap();
+}
+let wheelRaf = false;
+$("bot-map").addEventListener("wheel", (ev) => {
+  ev.preventDefault();
+  if (wheelRaf) return;
+  wheelRaf = true;
+  const delta = ev.deltaY;
+  requestAnimationFrame(() => {
+    wheelRaf = false;
+    const rect = $("bot-map").getBoundingClientRect();
+    // proportional zoom: ~1.2x per ±100 delta notch, smooth for trackpads
+    zoomAt(ev.clientX - rect.left, ev.clientY - rect.top, Math.exp(-delta * 0.0018));
+  });
+}, { passive: false });
+
+let panState = null;
+$("bot-map").addEventListener("mousedown", (ev) => {
+  if (ev.button !== 0) return;
+  panState = { x: ev.clientX, y: ev.clientY, moved: 0 };
+});
+$("bot-map").addEventListener("mousemove", (ev) => {
+  if (panState) {
+    const dx = ev.clientX - panState.x, dy = ev.clientY - panState.y;
+    panState.moved += Math.abs(dx) + Math.abs(dy);
+    panState.x = ev.clientX; panState.y = ev.clientY;
+    const t = mapState._transform;
+    if (t && mapState.view) {
+      const v = mapState.view;
+      mapState.view = { x0: v.x0 - dx / t.scale, x1: v.x1 - dx / t.scale,
+                        y0: v.y0 + dy / t.scale, y1: v.y1 + dy / t.scale };
+      $("bot-map").style.cursor = "grabbing";
+      drawMap();
+    }
+    return;
+  }
+  // hover tooltip
+  const tip = $("map-tip");
+  const hit = mapBotAt(ev);
+  if (!hit) { tip.style.display = "none"; return; }
+  const b = hit.bot;
+  tip.innerHTML = `<div class="t-name">${esc(b.name)}</div>` +
+    `<div class="t-sub">${esc(b.script)} · ${b.hp_percent}% hp` +
+    (b.stuck ? ` · <span style="color:var(--red)">STUCK</span>` : "") + `</div>`;
+  tip.style.display = "block";
+  tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - 160) + "px";
+  tip.style.top = (ev.clientY + 14) + "px";
+});
+window.addEventListener("mouseup", () => {
+  if (panState) { panState = null; $("bot-map").style.cursor = "crosshair"; }
+});
+$("bot-map").addEventListener("mouseleave", () => {
+  $("map-tip").style.display = "none";
+  panState = null;
+  $("bot-map").style.cursor = "crosshair";
+});
+$("bot-map").addEventListener("click", (ev) => {
+  if (panState && panState.moved > 6) return; // was a drag, not a click
+  const hit = mapBotAt(ev);
+  if (hit) openDrawer(hit.bot.name);
+});
+
+/* =====================================================================
+ * Bot table
+ * ===================================================================== */
+function visibleBots() {
+  const f = state.filter;
+  return state.bots.filter((b) =>
+    (!f.script || b.script === f.script) &&
+    (!f.stuckOnly || b.stuck) &&
+    (!f.search || b.name.toLowerCase().includes(f.search)));
+}
+function sortBots(list) {
+  const k = state.sortKey, dir = state.sortAsc ? 1 : -1;
+  const val = (b) => k === "x" ? b.location.x :
+    k === "stuck" ? (b.stuck ? 1 : 0) : b[k];
+  return list.slice().sort((a, b) => {
+    const va = val(a), vb = val(b);
+    if (typeof va === "string") return va.localeCompare(vb) * dir;
+    return ((va > vb) - (va < vb)) * dir;
+  });
+}
+function hpBarColor(pct) { return pct <= 25 ? "var(--red)" : pct <= 50 ? "var(--orange)" : "var(--green)"; }
+
+function renderTable() {
+  const tbody = $("bot-tbody");
+  const all = sortBots(visibleBots());
+  const rows = all.slice(0, TABLE_ROW_CAP);
+  const capped = all.length - rows.length;
+  $("bot-count").textContent = `${rows.length}/${state.bots.length}` +
+    (capped > 0 ? ` (+${capped} hidden — filter)` : "");
+  $("table-empty").style.display = all.length ? "none" : "block";
+  tbody.innerHTML = "";
+  for (const b of rows) {
+    const tr = document.createElement("tr");
+    if (b.stuck) tr.className = "stuck-row";
+    if (state.selected && b.name === state.selected) tr.classList.add("selected");
+    const age = (t) => t < 0 ? "—" : t;
+    tr.innerHTML =
+      `<td>${esc(b.name)}</td>` +
+      `<td class="scr"><span class="swatch" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${scriptColor(b.script)};margin-right:6px"></span>${esc(b.script)}</td>` +
+      `<td>${b.location.x}, ${b.location.y}, ${b.location.z}</td>` +
+      `<td><div class="hp-cell"><div class="hp-bar"><div style="width:${Math.max(0, Math.min(100, b.hp_percent))}%;background:${hpBarColor(b.hp_percent)}"></div></div>${b.hp_percent}%</div></td>` +
+      `<td>${age(b.ticks_since_state_change)}</td>` +
+      `<td>${age(b.ticks_since_tile_change)}</td>` +
+      `<td>${b.stuck ? '<span class="badge stuck">STUCK</span>' :
+        (b.script === "AFK" ? '<span class="badge afk">afk</span>' : "ok")}</td>`;
+    tr.onclick = () => openDrawer(b.name);
+    tbody.appendChild(tr);
+  }
+  document.querySelectorAll("#bot-table th").forEach((th) => {
+    th.querySelector(".arrow").textContent = th.dataset.k === state.sortKey ? (state.sortAsc ? "▲" : "▼") : "";
+  });
+}
+function updateScriptFilter() {
+  const sel = $("flt-script");
+  const scripts = [...new Set(state.bots.map((b) => b.script))].sort();
+  if (sel.dataset.sig !== scripts.join(",")) {
+    sel.dataset.sig = scripts.join(",");
+    sel.innerHTML = '<option value="">All scripts</option>' +
+      scripts.map((s) => `<option${s === state.filter.script ? " selected" : ""}>${esc(s)}</option>`).join("");
+  }
+}
+document.querySelectorAll("#bot-table th").forEach((th) => {
+  th.onclick = () => {
+    if (state.sortKey === th.dataset.k) state.sortAsc = !state.sortAsc;
+    else { state.sortKey = th.dataset.k; state.sortAsc = true; }
+    renderTable();
+  };
+});
+$("flt-search").addEventListener("input", (e) => { state.filter.search = e.target.value.toLowerCase(); renderTable(); });
+$("flt-script").addEventListener("change", (e) => { state.filter.script = e.target.value; renderChips(); renderTable(); });
+$("flt-stuck").addEventListener("change", (e) => { state.filter.stuckOnly = e.target.checked; renderTable(); });
+
+/* =====================================================================
+ * Drawer (bot detail + events + actions)
+ * ===================================================================== */
+function openDrawer(name) {
+  if (state.selected !== name) {
+    state.selected = name;
+    state.detail = null;
+    state.eventCursor = 0;
+    state.eventsUntracked = false;
+    $("event-log").innerHTML = "";
+    delete $("event-log").dataset.untracked;
+  }
+  $("drawer").classList.add("open");
+  document.body.classList.add("drawer-open");
+  pollNow();
+}
+function closeDrawer() {
+  state.selected = null;
+  state.detail = null;
+  $("drawer").classList.remove("open");
+  document.body.classList.remove("drawer-open");
+  renderTable(); drawMap();
+}
+$("dw-close").onclick = closeDrawer;
+
+function itemCard(it) {
+  return `<div class="inv-item">${esc(it.name)} <span class="amt">×${fmtInt(it.amount)}</span>` +
+    `<div class="val">${fmtGp(it.value)} ea</div></div>`;
+}
+function renderDrawer() {
+  if (!state.selected || !state.detail) return;
+  const d = state.detail;
+  $("dw-name").textContent = d.name;
+  $("dw-type").textContent = d.type + (d.stuck ? "  ·  STUCK" : "");
+  $("dw-type").style.color = d.stuck ? "var(--red)" : "";
+  $("dw-goal").textContent = d.current_goal || "—";
+  $("dw-hp").innerHTML = `<div class="hp-cell"><div class="hp-bar" style="width:80px"><div style="width:${Math.max(0, Math.min(100, d.hp_percent))}%;background:${hpBarColor(d.hp_percent)}"></div></div> ${d.hp_percent}%</div>`;
+  $("dw-xp").textContent = d.xp_per_hour ? fmtInt(Math.round(d.xp_per_hour)) : "—";
+  $("dw-loc").textContent = locStr(d.location);
+  $("dw-ages").textContent = `${d.ticks_since_state_change < 0 ? "—" : d.ticks_since_state_change} / ${d.ticks_since_tile_change < 0 ? "—" : d.ticks_since_tile_change} ticks`;
+  $("dw-combat").innerHTML = d.combat_target
+    ? `${esc(d.combat_target.name)} <span style="color:var(--muted)">(${d.combat_target.hp} hp · ${d.combat_target.hp_percent}%)</span>`
+    : "—";
+  $("dw-interact").textContent = d.interacting_with
+    ? `${d.interacting_with.type}: ${d.interacting_with.name}` : "—";
+  $("dw-pathing").innerHTML = `${locStr(d.pathing.destination)} <span style="color:var(--muted)">queue ${d.pathing.queue_size}</span>`;
+  $("dw-ge").textContent = d.ge_offer ? `item ${d.ge_offer.item_id} × ${fmtInt(d.ge_offer.amount)}` : "—";
+  $("dw-ground").textContent = d.ground_items_held;
+  $("dw-inv-value").textContent = d.inventory_value ? "(" + fmtGp(d.inventory_value) + " gp)" : "";
+  $("dw-inventory").innerHTML = d.inventory.length
+    ? d.inventory.map(itemCard).join("") : '<span class="hdr-note">empty</span>';
+  $("dw-equipment").innerHTML = d.equipment.length
+    ? d.equipment.map(itemCard).join("") : '<span class="hdr-note">none</span>';
+  // prefill teleport inputs once
+  if (!$("tp-x").value) $("tp-x").value = d.location.x;
+  if (!$("tp-y").value) $("tp-y").value = d.location.y;
+}
+
+const EV_ORDER = { SPAWN: 0, STATE: 1, INTERACT: 2, TELEPORT: 3, DEATH: 4 };
+function appendEvent(ev) {
+  const log = $("event-log");
+  if (log.dataset.untracked === "1") { log.innerHTML = ""; delete log.dataset.untracked; }
+  const div = document.createElement("div");
+  div.className = "ev " + esc(ev.type);
+  div.innerHTML = `<span class="t">[${ev.tick}]</span> <span class="ty">${esc(ev.type)}</span> ${esc(ev.detail)}`;
+  log.appendChild(div);
+  while (log.children.length > 300) log.removeChild(log.firstChild);
+  if ($("ev-autoscroll").checked) log.scrollTop = log.scrollHeight;
+}
+$("ev-clear").onclick = () => { $("event-log").innerHTML = ""; };
+$("ev-follow").addEventListener("change", (e) => {
+  if (e.target.checked && state.selected) pollNow();
+});
+
+/* ---------------- drawer actions ---------------- */
+async function doAction(label, fn) {
+  if (!state.selected) return;
+  try {
+    const r = await fn();
+    if (r.ok) { toast(label, r.data.result || r.data.deleted || r.data.name || "done"); pollNow(); }
+    else toast(label + " failed", r.data && r.data.error ? r.data.error : "HTTP " + r.status, true);
+  } catch (e) { if (e.offline) toast(label + " failed", "server offline", true); }
+}
+$("ac-kill").onclick = () => {
+  if (state.selected && confirm(`Kill ${state.selected}? This triggers the real death/respawn path.`))
+    doAction("Kill", () => apiPost(`/api/bots/${encodeURIComponent(state.selected)}/test`, { action: "kill" }));
+};
+$("ac-clear-inv").onclick = () =>
+  doAction("Clear inventory", () => apiPost(`/api/bots/${encodeURIComponent(state.selected)}/test`, { action: "clear_inventory" }));
+$("ac-teleport").onclick = () => {
+  const x = parseInt($("tp-x").value, 10), y = parseInt($("tp-y").value, 10), z = parseInt($("tp-z").value, 10) || 0;
+  if (isNaN(x) || isNaN(y)) { toast("Teleport failed", "x and y are required", true); return; }
+  doAction("Teleport", () => apiPost(`/api/bots/${encodeURIComponent(state.selected)}/test`,
+    { action: "teleport", location: { x, y, z } }));
+};
+$("ac-give").onclick = () => {
+  const id = parseInt($("gi-id").value, 10), amt = parseInt($("gi-amt").value, 10) || 1;
+  if (isNaN(id)) { toast("Give item failed", "item id is required", true); return; }
+  doAction("Give item", () => apiPost(`/api/bots/${encodeURIComponent(state.selected)}/test`,
+    { action: "give_item", item_id: id, amount: amt }));
+};
+$("ac-delete").onclick = () => {
+  if (!state.selected) return;
+  const name = state.selected;
+  if (!confirm(`Delete ${name}? The bot is removed from the world (you can spawn a replacement).`)) return;
+  (async () => {
+    try {
+      const r = await api(`/api/bots/${encodeURIComponent(name)}`, { method: "DELETE" });
+      if (r.ok) { toast("Deleted", name); closeDrawer(); pollNow(); }
+      else toast("Delete failed", r.data && r.data.error || "HTTP " + r.status, true);
+    } catch (e) { if (e.offline) toast("Delete failed", "server offline", true); }
+  })();
+};
+
+/* =====================================================================
+ * Spawn panel
+ * ===================================================================== */
+function buildSpawnPanel() {
+  const sel = $("sp-script");
+  // Adventurer needs a CombatStyle arg so /api/scripts reports it unspawnable,
+  // but POST /api/bots/spawn special-cases type=Adventurer — offer it always.
+  const scripts = state.scripts.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const hasAdventurer = scripts.some((s) => s.name === "Adventurer");
+  let html = '<option value="Adventurer">Adventurer (special-cased)</option>';
+  for (const s of scripts) {
+    if (s.name === "Adventurer") continue;
+    html += `<option value="${esc(s.name)}"${s.spawnable ? "" : " disabled"}>` +
+      `${esc(s.name)}${s.spawnable ? "" : " — not spawnable"}</option>`;
+  }
+  sel.innerHTML = html;
+  if (!hasAdventurer && !state.scriptsLoaded) return;
+  sel.onchange = updateSpawnHints;
+  updateSpawnHints();
+}
+function updateSpawnHints() {
+  const name = $("sp-script").value;
+  const s = state.scripts.find((x) => x.name === name);
+  const hint = s ? (s.states.length ? "states: " + s.states.join(", ") : "no State enum") : "";
+  $("sp-script-hint").textContent = hint + (s && !s.spawnable && s.name !== "Adventurer" ? " (needs constructor args)" : "");
+
+  const isAdventurer = name === "Adventurer";
+  const kind = document.querySelector('input[name="sp-kind"]:checked').value;
+  // Adventurer is always built by the combat assembler; style parses as
+  // CombatStyle (MAGIC) there but as CombatBotAssembler.Type (MAGE) elsewhere.
+  $("sp-style").innerHTML = isAdventurer
+    ? ["MELEE", "RANGE", "MAGIC"].map((v) => `<option>${v}</option>`).join("")
+    : ["MELEE", "RANGE", "MAGE"].map((v) => `<option>${v}</option>`).join("");
+  const combat = isAdventurer || kind === "combat";
+  $("sp-style-field").style.display = combat ? "" : "none";
+  $("sp-tier-field").style.display = combat ? "" : "none";
+  $("sp-wealth-field").style.display = combat ? "none" : "";
+  $("sp-body-kind-field").style.opacity = isAdventurer ? ".4" : "1";
+  $("sp-body-kind-field").style.pointerEvents = isAdventurer ? "none" : "auto";
+  renderSpawnPreview();
+}
+function spawnPayload() {
+  const body = { type: $("sp-script").value };
+  const isAdventurer = body.type === "Adventurer";
+  const kind = document.querySelector('input[name="sp-kind"]:checked').value;
+  if (isAdventurer || kind === "combat") {
+    body.style = $("sp-style").value;
+    body.tier = $("sp-tier").value;
+  } else {
+    body.wealth = $("sp-wealth").value;
+  }
+  const x = parseInt($("sp-x").value, 10), y = parseInt($("sp-y").value, 10),
+        z = parseInt($("sp-z").value, 10);
+  if (!isNaN(x) && !isNaN(y)) body.location = { x, y, z: isNaN(z) ? 0 : z };
+  return body;
+}
+function renderSpawnPreview() { $("spawn-preview").textContent = JSON.stringify(spawnPayload()); }
+["sp-x", "sp-y", "sp-z", "sp-tier", "sp-wealth", "sp-style"].forEach((id) =>
+  $(id).addEventListener("change", renderSpawnPreview));
+document.querySelectorAll('input[name="sp-kind"]').forEach((r) => r.addEventListener("change", updateSpawnHints));
+
+$("sp-go").onclick = async () => {
+  const body = spawnPayload();
+  try {
+    const r = await apiPost("/api/bots/spawn", body);
+    if (r.ok) { toast("Spawned " + r.data.name, body.type + " at " + (body.location ? locStr(body.location) : "Lumbridge")); pollNow(); }
+    else toast("Spawn failed", r.data && r.data.error || "HTTP " + r.status, true);
+  } catch (e) { if (e.offline) toast("Spawn failed", "server offline", true); }
+};
+$("btn-spawn-toggle").onclick = () => {
+  const panel = $("spawn-panel");
+  panel.classList.toggle("open");
+  if (panel.classList.contains("open") && !state.scriptsLoaded) pollNow();
+};
+
+/* =====================================================================
+ * Header controls + boot
+ * ===================================================================== */
+$("btn-pause").onclick = () => {
+  state.paused = !state.paused;
+  $("btn-pause").textContent = state.paused ? "Resume" : "Pause";
+};
+function pollNow() {
+  pollAll().catch((e) => { if (!e.offline) console.error(e); });
+}
+$("btn-refresh").onclick = pollNow;
+window.addEventListener("resize", () => { drawMap(); renderChips(); });
+
+pollLoop(); // fire-and-forget background loop
+</script>
+</body>
+</html>

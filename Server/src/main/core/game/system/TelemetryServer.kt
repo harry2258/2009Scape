@@ -190,6 +190,9 @@ class TelemetryServer : StartupListener, ShutdownListener {
             segments.size == 3 && segments[1] == "server" && segments[2] == "deaths" && method == "GET" ->
                 handleServerDeaths(exchange, query)
 
+            segments.size == 3 && segments[1] == "server" && segments[2] == "techniques" && method == "GET" ->
+                handleServerTechniques(exchange, query)
+
             else -> error(exchange, 404, "Not found")
         }
     }
@@ -548,6 +551,18 @@ class TelemetryServer : StartupListener, ShutdownListener {
     private fun handleServerDeaths(exchange: HttpExchange, query: Map<String, String>) {
         val limit = query["recent"]?.toIntOrNull()?.coerceIn(0, 100) ?: 100
         val result = onGameThread { TelemetryTracker.buildDeathStatsJson(limit) }
+            ?: return error(exchange, 503, "Game thread unavailable (timed out)")
+        result.exceptionOrNull()?.let { return error(exchange, 500, "Game-thread error: ${it.message}") }
+        respond(exchange, 200, result.getOrNull() ?: JSONObject())
+    }
+
+    // ------------------------------------------------------------------
+    // GET /api/server/techniques — PK technique decisions since server start
+    // ------------------------------------------------------------------
+
+    private fun handleServerTechniques(exchange: HttpExchange, query: Map<String, String>) {
+        val limit = query["recent"]?.toIntOrNull()?.coerceIn(0, 100) ?: 100
+        val result = onGameThread { TelemetryTracker.buildTechniqueStatsJson(limit) }
             ?: return error(exchange, 503, "Game thread unavailable (timed out)")
         result.exceptionOrNull()?.let { return error(exchange, 500, "Game-thread error: ${it.message}") }
         respond(exchange, 200, result.getOrNull() ?: JSONObject())

@@ -353,24 +353,20 @@ class ImmerseWorld : StartupListener {
                 )
             }
             // PvP Bots — 120 total: ~1/3 aggressors (skulled, hunt players) and
-            // ~2/3 neutrals (unskulled, retaliate only). Spawn tier is rolled
-            // independently of aggression (25% LOW / 40% MED / 35% HIGH) so the
-            // population's combat levels — and therefore their willingness to
-            // push deep in the risk model — vary like real PKer traffic. Spawned
-            // staggered like the Adventurer pass so 120 combat bodies don't
-            // materialise in one burst.
+            // ~2/3 neutrals (unskulled, retaliate only). Each bot rolls a 2009 PK
+            // account build (30% pure / 25% zerker / 20% rune pure / 25% main) —
+            // the build's stats and gear drive which PK techniques the bot can
+            // use, and low builds cluster near the ditch via the risk model.
+            // Spawned staggered like the Adventurer pass so 120 combat bodies
+            // don't materialise in one burst.
             val pkerTotal = 120
             val aggressorCount = pkerTotal / 3
             repeat(pkerTotal) { i ->
                 val isAggressive = i < aggressorCount
-                val tier = when (RandomFunction.random(100)) {
-                    in 0..24  -> CombatBotAssembler.Tier.LOW
-                    in 25..64 -> CombatBotAssembler.Tier.MED
-                    else      -> CombatBotAssembler.Tier.HIGH
-                }
+                val build = CombatBotAssembler.PKBuild.random()
                 GeneralBotCreator(
-                    WildernessPKer(aggressive = isAggressive),
-                    assembler.produce(CombatBotAssembler.Type.MELEE, tier, wilderness)
+                    WildernessPKer(aggressive = isAggressive, build = build),
+                    assembler.assemblePKBuild(build, wilderness)
                 )
                 try {
                     Thread.sleep(50)

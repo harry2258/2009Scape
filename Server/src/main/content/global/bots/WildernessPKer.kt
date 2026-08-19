@@ -4,7 +4,9 @@ import content.global.handlers.item.TeleTabsListener.TeleTabs
 import core.game.bots.AIPlayer
 import core.game.bots.AIRepository
 import core.game.bots.CombatBotAssembler
+import core.game.bots.CombatBotAssembler.PKBuild
 import core.game.bots.Script
+import core.game.system.TelemetryTracker
 import core.game.interaction.DestinationFlag
 import core.game.interaction.IntType
 import core.game.interaction.InteractionListeners
@@ -20,6 +22,7 @@ import core.game.world.map.zone.ZoneBorders
 import core.game.world.map.zone.impl.WildernessZone
 import core.tools.RandomFunction
 import kotlin.math.abs
+import kotlin.math.max
 import org.rs09.consts.Items
 
 /**
@@ -39,8 +42,9 @@ import org.rs09.consts.Items
  *  - We use ULTIMATE_STRENGTH (31) + INCREDIBLE_REFLEXES (34) + STEEL_SKIN (28) as combat prayers
  *
  * @param aggressive if true, the bot will attack players; if false, retaliates only
+ * @param build the 2009 PK account build (stats + gear + technique set)
  */
-class WildernessPKer(val aggressive: Boolean = true) : Script() {
+class WildernessPKer(val aggressive: Boolean = true, val build: PKBuild = PKBuild.random()) : Script() {
 
     companion object {
         // Ditch crossing lines. Both rows must sit at y>=3520: getNearestNode only
@@ -74,14 +78,37 @@ class WildernessPKer(val aggressive: Boolean = true) : Script() {
         private val WILD_Y_MIN = 3525
         private val WILD_Y_MAX = 3960   // wilderness level 56 — the max
 
+        // Hunt mode: aggressive PKers chase the nearest valid target instead of
+        // waiting for one to wander into ambush range. Post-diffusion telemetry
+        // showed ~1 new engagement/hour across 120 bots with the 15-tile
+        // opportunistic scan alone — real PKers follow minimap dots.
+        private const val HUNT_RADIUS = 40          // sweep for the nearest target
+        private const val HUNT_SWEEP_INTERVAL = 10  // re-sweep cadence (roaming ticks)
+        private const val HUNT_MOVE_INTERVAL = 5    // re-path cadence while chasing
+        private const val HUNT_GIVE_UP_TICKS = 150  // lost the trail: back to roaming
+
         private val EDGEVILLE_GLORY  = Location.create(3087, 3495, 0) // glory "Edgeville" destination
 
         /** City teleport tabs usable for the level <= 20 escape tier (see TeleTabsListener). */
         private val VARROCK_TAB = TeleTabs.VARROCK_TELEPORT
         private val FALADOR_TAB = TeleTabs.FALADOR_TELEPORT
 
-        /** Past this many ticks (~90s) of one fight, the bot calls it unwinnable and escapes. */
-        private const val FIGHT_GIVE_UP_TICKS = 150
+        // No fight give-up timer: fights resolve naturally — someone runs out of
+        // food and either dies, flees (flee triggers below), or gets KO'd.
+
+        // KO weapons carried in inventory (see combatTick).
+        private const val RUNE_2H = 1319     // rune 2h sword — heavy KO swap
+        private const val DDS = 5698         // dragon dagger(p++) — spec KOs (60+ attack)
+        private const val KARAMBWAN = 3144   // combo food: same-tick eat with normal food
+
+        /**
+         * Food carried per trip (kit spawn + bank restock target). 6, down from
+         * 12: with a full 12-kit and clock-gated eating, both fighters simply
+         * out-healed each other's DPS forever (observed: victims pinned at
+         * 45-65% HP, fights never reaching a KO). Half the sustain means
+         * someone's food runs out — and then they die or flee.
+         */
+        private const val KIT_FOOD_COUNT = 6
 
         val trashTalkLines = arrayOf(
             "Sit.", "Gf.", "Easy.", "L0l.", "Bank was made.",
@@ -95,6 +122,13 @@ class WildernessPKer(val aggressive: Boolean = true) : Script() {
 
     private var state = State.TO_BANK
     private var trashTalkDelay = 0
+
+    // Hunt mode: the player being chased. Formal engagement still happens via
+    // the 15-tile scan once the chase closes the distance.
+    private var quarry: Player? = null
+    private var huntTicks = 0
+    private var huntSweepCooldown = 0
+    private var huntMoveCooldown = 0
     private var target: Player? = null
     private var beingAttackedBy: Player? = null
     private var idleTicks = 0
@@ -131,11 +165,202 @@ class WildernessPKer(val aggressive: Boolean = true) : Script() {
     }
 
     private fun disengageAndRetreat() {
+        TelemetryTracker.onBotTechnique(bot, "FLED_FIGHT", "after $fightTicks ticks @ ${bot.skills.lifepoints}hp", build.name)
         target = null
         beingAttackedBy = null
+        quarry = null
         bot.properties.combatPulse.stop()
         invalidateCarriedValue()
         state = State.RETREATING
+    }
+
+    // ─── PK techniques (run from combatTick — tick() is paused in combat) ────
+
+    private var koMode = false
+    private var koTicks = 0
+    private var mainWeaponId = -1
+    private var smiteOn = false
+    private var piFlickCooldown = 0
+    private var comboEatCooldown = 0
+    private var hpSampleCooldown = 0
+
+    /**
+     * In-fight decision making, called every pulse tick while attacking.
+     * Implements the 2009 melee technique set: combo eating when critical,
+     * KO weapon swapping (rune 2h) / DDS specials when the victim is low,
+     * smiting victims whose prayer is nearly gone, and a defensive Protect
+     * Item flick when losing.
+     */
+    override fun combatTick() {
+        val victim = runCatching { bot.properties.combatPulse.getVictim() }.getOrNull() ?: return
+        val maxLp = bot.skills.maximumLifepoints.coerceAtLeast(1)
+        val hpRatio = bot.skills.lifepoints.toDouble() / maxLp
+
+        // Combo eat: food + karambwan in the same tick (the engine models
+        // karambwans as combo food) when critically hurt. Cooldown-limited —
+        // the emergency layer on top of the clock-gated routine eating.
+        // comboEatReliability: the panic eat sometimes doesn't come off (the
+        // bot fumbles it), which is exactly the tick-wide window an opponent's
+        // KO needs. Failed rolls retry next tick once the roll comes good.
+        if (comboEatCooldown > 0) comboEatCooldown--
+        if (hpRatio < 0.30 && comboEatCooldown == 0
+            && bot.inventory.contains(KARAMBWAN, 1) && hasFood()
+            && RandomFunction.random(100) < comboEatReliability) {
+            scriptAPI.forceEat(food)
+            scriptAPI.forceEat(KARAMBWAN)
+            comboEatCooldown = 8
+            TelemetryTracker.onBotTechnique(bot, "COMBO_EAT", "food+karambwan @ ${(hpRatio * 100).toInt()}%", build.name)
+        }
+
+        if (victim is Player) {
+            val vMax = victim.skills.maximumLifepoints.coerceAtLeast(1)
+            val vHpRatio = victim.skills.lifepoints.toDouble() / vMax
+
+            // Diagnostic: sample near-window victim HP so fight trajectories are
+            // observable in the technique telemetry.
+            if (hpSampleCooldown > 0) hpSampleCooldown-- else if (vHpRatio < 0.60) {
+                hpSampleCooldown = 15
+                TelemetryTracker.onBotTechnique(bot, "VICTIM_HP", "victim at ${(vHpRatio * 100).toInt()}%", build.name)
+            }
+
+            // KO time: swap to the heavy weapon — DDS special if we can, rune 2h otherwise.
+            // 35% not 30%: combo eating snaps victims back +38hp instantly, so the
+            // window is a single tick wide — the extra margin catches more of them.
+            // Fights also OPEN with the DDS special when available (classic NH
+            // opener): bot-vs-bot DPS is low enough that victims rarely reach the
+            // window otherwise (telemetry: one sub-60% victim sample in 6 minutes).
+            if (koMode) {
+                if (++koTicks > 8) exitKoMode() // time-boxed: back to the main weapon after the burst
+            } else if (vHpRatio <= 0.35 || (fightTicks < 3 && bot.inventory.contains(DDS, 1)
+                        && bot.skills.getStaticLevel(Skills.ATTACK) >= 60
+                        && bot.settings.getSpecialEnergy() >= 25)) {
+                enterKoMode(vHpRatio)
+            }
+
+            // Smite: burn the victim's last prayer so Protect Item (and everything
+            // else) drops — drain itself is engine-side.
+            if (!smiteOn
+                && bot.skills.getStaticLevel(Skills.PRAYER) >= 52
+                && victim.skills.getPrayerPoints() in 0.5..15.0
+                && victim.prayer.active.isNotEmpty()
+            ) {
+                PrayerType.SMITE.toggle(bot, true)
+                smiteOn = true
+                TelemetryTracker.onBotTechnique(bot, "SMITE", "victim pray ${victim.skills.getPrayerPoints().toInt()}", build.name)
+            }
+        }
+
+        // Protect Item flick when losing: if we do die, the engine keeps one extra item.
+        // Points check + cooldown: once the prayer pool is drained, Prayer.tick()
+        // resets everything and the toggle never sticks — without the guard this
+        // re-fires every tick (observed as PI_FLICK spam on low-prayer builds).
+        if (piFlickCooldown > 0) piFlickCooldown--
+        if (hpRatio < 0.30 && piFlickCooldown == 0
+            && bot.skills.getPrayerPoints() > 0
+            && !bot.prayer.get(PrayerType.PROTECT_ITEMS)) {
+            PrayerType.PROTECT_ITEMS.toggle(bot, true)
+            piFlickCooldown = 10
+            TelemetryTracker.onBotTechnique(bot, "PI_FLICK", "@ ${(hpRatio * 100).toInt()}%", build.name)
+        }
+    }
+
+    /**
+     * Eat-or-attack: eating hands the opponent free hits (ScriptAPI.eat delays
+     * our next swing by 3 ticks), so while a KO is on — mid-burst, or the
+     * victim is nearly dead — skip the heal and keep swinging unless we're
+     * critically low ourselves. The classic PKer gamble: race the kill instead
+     * of turtling on food.
+     */
+    override fun shouldCombatEat(): Boolean {
+        val maxLp = bot.skills.maximumLifepoints.coerceAtLeast(1)
+        if (bot.skills.lifepoints.toDouble() / maxLp <= 0.25) return true // survival first
+        if (koMode) return false // mid-burst: keep the pressure on
+        val victim = runCatching { bot.properties.combatPulse.getVictim() }.getOrNull() as? Player ?: return true
+        val vRatio = victim.skills.lifepoints.toDouble() /
+                victim.skills.maximumLifepoints.coerceAtLeast(1)
+        return vRatio > 0.25 // victim killable → press the kill over the heal
+    }
+
+    /**
+     * Swaps to the KO weapon. Prefers a DDS special (60+ attack, 25% energy —
+     * the Puncture handler fires on the next swing and auto-untoggles), falling
+     * back to a rune 2h swap. Attack timing persists across the swap, matching
+     * the authentic switch mechanic.
+     */
+    private fun enterKoMode(victimHpRatio: Double) {
+        val main = bot.equipment.getNew(3)
+        if (bot.inventory.isFull && main != null) {
+            // No free slot to stash the main weapon — eat to make room, exactly
+            // like a real PKer clearing space for the KO weapon. If there's
+            // nothing edible, skip the swap rather than drop the main weapon.
+            when {
+                hasFood() -> scriptAPI.forceEat(food)
+                bot.inventory.contains(KARAMBWAN, 1) -> scriptAPI.forceEat(KARAMBWAN)
+                else -> {
+                    TelemetryTracker.onBotTechnique(bot, "KO_SKIP", "inv full, nothing edible", build.name)
+                    return
+                }
+            }
+            if (bot.inventory.isFull) {
+                TelemetryTracker.onBotTechnique(bot, "KO_SKIP", "inv still full after eating", build.name)
+                return
+            }
+        }
+        val canSpec = bot.inventory.contains(DDS, 1)
+                && bot.skills.getStaticLevel(Skills.ATTACK) >= 60
+                && bot.settings.getSpecialEnergy() >= 25
+        val koWeapon = if (canSpec) DDS else RUNE_2H
+        if (!bot.inventory.contains(koWeapon, 1)) {
+            TelemetryTracker.onBotTechnique(bot, "KO_SKIP", "missing ${if (canSpec) "dds" else "2h"}", build.name)
+            return
+        }
+        if (main != null) {
+            mainWeaponId = main.id
+            bot.inventory.add(main)
+        }
+        bot.inventory.remove(Item(koWeapon, 1))
+        bot.equipment.replace(Item(koWeapon, 1), 3)
+        koMode = true
+        koTicks = 0
+        if (canSpec) {
+            // setSpecialToggled ignores its argument (toggle-only) — only call when off.
+            if (!bot.settings.isSpecialToggled) {
+                bot.settings.toggleSpecialBar()
+            }
+            TelemetryTracker.onBotTechnique(bot, "SPEC", "DDS special @ victim ${(victimHpRatio * 100).toInt()}%", build.name)
+        } else {
+            TelemetryTracker.onBotTechnique(bot, "KO_SWAP", "rune 2h @ victim ${(victimHpRatio * 100).toInt()}%", build.name)
+        }
+    }
+
+    /** Restores the main weapon and turns smite off — called on any fight exit. */
+    private fun endFightCleanup() {
+        exitKoMode()
+        if (smiteOn) {
+            PrayerType.SMITE.toggle(bot, false)
+            smiteOn = false
+        }
+    }
+
+    private fun exitKoMode() {
+        if (!koMode) return
+        koMode = false
+        if (bot.settings.isSpecialToggled) {
+            bot.settings.toggleSpecialBar()
+        }
+        val ko = bot.equipment.getNew(3)
+        if (ko != null && (ko.id == DDS || ko.id == RUNE_2H)) {
+            val main = if (mainWeaponId > 0) bot.inventory.getItem(Item(mainWeaponId)) else null
+            if (main != null) {
+                bot.inventory.remove(main)
+                bot.inventory.add(ko)
+                bot.equipment.replace(main, 3)
+            } else {
+                bot.inventory.add(ko)
+                // No main weapon to restore (lost it?) — the KO weapon stays wielded; it's still a weapon.
+            }
+        }
+        mainWeaponId = -1
     }
 
     /** This bot's entry hotspot — re-picked after bank trips. */
@@ -149,13 +374,6 @@ class WildernessPKer(val aggressive: Boolean = true) : Script() {
             if (roll <= 0) return zone
         }
         return roamHotspots.first().first
-    }
-
-    /** Spawn tier is independent of aggression: 25% LOW / 40% MED / 35% HIGH. */
-    private fun rollTier(): CombatBotAssembler.Tier = when (RandomFunction.random(100)) {
-        in 0..24  -> CombatBotAssembler.Tier.LOW
-        in 25..64 -> CombatBotAssembler.Tier.MED
-        else      -> CombatBotAssembler.Tier.HIGH
     }
 
     private val food = when (RandomFunction.random(3)) {
@@ -176,7 +394,7 @@ class WildernessPKer(val aggressive: Boolean = true) : Script() {
     private fun retreatLevel(): Int {
         val maxLp = bot.skills.maximumLifepoints.coerceAtLeast(1)
         val hpRatio = bot.skills.lifepoints.toDouble() / maxLp
-        val foodRatio = (bot.inventory.getAmount(food) / 8.0).coerceAtMost(1.0)
+        val foodRatio = (bot.inventory.getAmount(food) / KIT_FOOD_COUNT.toDouble()).coerceAtMost(1.0)
         val maxPrayer = bot.skills.getStaticLevel(Skills.PRAYER).coerceAtLeast(1)
         val prayerRatio = (bot.skills.getPrayerPoints() / maxPrayer).coerceIn(0.0, 1.0)
         val gearRisk = (carriedValue() / 400_000.0).coerceAtMost(1.0)
@@ -381,12 +599,14 @@ class WildernessPKer(val aggressive: Boolean = true) : Script() {
             val ok = scriptAPI.teleport(tab.location)
             if (ok) {
                 bot.inventory.remove(Item(tab.item, 1))
+                TelemetryTracker.onBotTechnique(bot, "TAB_ESCAPE", "${if (tab == VARROCK_TAB) "varrock" else "falador"} tab @ lvl $level", build.name)
             }
             return ok
         } else if (level <= 30 && hasChargedGlory()) {
             drainGloryCharge()
             bot.visualize(core.game.world.update.flag.context.Animation(8939), core.game.world.update.flag.context.Graphics(1576))
             bot.properties.teleportLocation = EDGEVILLE_GLORY
+            TelemetryTracker.onBotTechnique(bot, "GLORY_ESCAPE", "glory @ lvl $level", build.name)
             return true
         }
         return false
@@ -467,6 +687,11 @@ class WildernessPKer(val aggressive: Boolean = true) : Script() {
 
         checkEat()
 
+        // Fight just ended (state left the combat states)? Undo fight gear.
+        if (state != State.ATTACKING && state != State.RETALIATING && (koMode || smiteOn)) {
+            endFightCleanup()
+        }
+
         // Notice incoming attacks outside dedicated combat states (the swing-handler
         // hook this replaces could never fire — incoming attacks run on the
         // ATTACKER's combat pulse, not the bot's own).
@@ -511,22 +736,25 @@ class WildernessPKer(val aggressive: Boolean = true) : Script() {
             }
 
             State.BANKING -> {
-                // Deposit everything except food and tools
+                // Deposit everything except food and the technique kit — the kit
+                // used to get banked as loot and then couldn't be restocked into
+                // an inventory full of junk, silently disarming KOs.
                 bot.pulseManager.run(object : Pulse(5) {
                     override fun pulse(): Boolean {
                         for (item in bot.inventory.toArray()) {
                             item ?: continue
-                            if (item.id == food) continue
+                            if (item.id == food || item.id == KARAMBWAN || item.id == RUNE_2H
+                                || item.id == DDS || item.id == VARROCK_TAB.item || item.id == FALADOR_TAB.item) continue
                             bot.bank.add(item)
                             bot.inventory.remove(item)
                         }
                         lootedValue = 0  // Reset loot tracking
                         // Withdraw food
                         val foodInBank = bot.bank.getAmount(food)
-                        if (foodInBank < 10) {
+                        if (foodInBank < KIT_FOOD_COUNT) {
                             bot.bank.add(Item(food, 30))
                         }
-                        scriptAPI.withdraw(food, 12)
+                        scriptAPI.withdraw(food, KIT_FOOD_COUNT)
                         // Restock teleport tabs for carriers (fake-economy conjure,
                         // same convention as the food top-up) — non-carriers stay
                         // on foot so the population split survives bank cycles.
@@ -538,6 +766,15 @@ class WildernessPKer(val aggressive: Boolean = true) : Script() {
                                 scriptAPI.withdraw(restock.item, 2 - tabs)
                             }
                         }
+                        // Combo food restock.
+                        val karambwans = bot.inventory.getAmount(KARAMBWAN)
+                        if (karambwans < 3) {
+                            bot.bank.add(Item(KARAMBWAN, 3))
+                            scriptAPI.withdraw(KARAMBWAN, 3 - karambwans)
+                        }
+                        // KO weapons lost to a death? Quietly replace them.
+                        if (!bot.inventory.contains(RUNE_2H, 1)) bot.inventory.add(Item(RUNE_2H, 1))
+                        if (!bot.inventory.contains(DDS, 1)) bot.inventory.add(Item(DDS, 1))
                         // Died and lost the weapon? Quietly re-gear before heading out.
                         if (bot.equipment.getNew(3) == null) {
                             bot.equipment.clear()
@@ -577,11 +814,9 @@ class WildernessPKer(val aggressive: Boolean = true) : Script() {
                     explores = false
                     bot.skullManager.setWilderness(true)
                     bot.skullManager.setLevel(WildernessZone.getWilderness(bot))
-                    if (aggressive) {
-                        // Aggressors skull immediately
-                        bot.skullManager.setSkulled(true)
-                        bot.skullManager.setSkullIcon(0)
-                    }
+                    // No forced self-skull: the engine's checkSkull skulls
+                    // aggressors on their first landed attack with the authentic
+                    // 2000-tick expiry, and correctly leaves retaliators unskulled.
                     activateOffensivePrayers()
                     state = State.ROAMING
                 }
@@ -618,6 +853,50 @@ class WildernessPKer(val aggressive: Boolean = true) : Script() {
                 }
 
                 if (aggressive) {
+                    // Hunt mode: sweep a wide radius for the nearest valid target
+                    // and chase it — minimap-dot pursuit, not ambush. Engagement
+                    // itself still goes through the 15-tile scan below, which
+                    // re-validates range and levels at the moment of attack.
+                    if (huntSweepCooldown > 0) {
+                        huntSweepCooldown--
+                    } else {
+                        huntSweepCooldown = HUNT_SWEEP_INTERVAL
+                        val found = RegionManager.getLocalPlayers(bot, HUNT_RADIUS)
+                            .filterNotNull()
+                            .filter { it !== bot && WildernessZone.isInZone(it) && isWorthAttacking(it) }
+                            .minByOrNull { p ->
+                                val dx = p.location.x - bot.location.x
+                                val dy = p.location.y - bot.location.y
+                                dx * dx + dy * dy
+                            }
+                        if (found != null) {
+                            if (found !== quarry) {
+                                val dist = max(abs(found.location.x - bot.location.x),
+                                    abs(found.location.y - bot.location.y))
+                                TelemetryTracker.onBotTechnique(bot, "HUNT",
+                                    "${found.name} @ $dist tiles", build.name)
+                            }
+                            quarry = found
+                            huntTicks = HUNT_GIVE_UP_TICKS
+                        }
+                    }
+                    val q = quarry
+                    if (q != null) {
+                        // Drop stale quarries: gone, left the wild, entered a
+                        // fight (no dogpiles), we got hurt, or the trail went cold.
+                        if (!q.isActive || !WildernessZone.isInZone(q) || !isWorthAttacking(q) || --huntTicks <= 0) {
+                            quarry = null
+                        } else if (max(abs(q.location.x - bot.location.x), abs(q.location.y - bot.location.y)) > 15) {
+                            if (huntMoveCooldown-- <= 0) {
+                                scriptAPI.walkTo(q.location)
+                                huntMoveCooldown = HUNT_MOVE_INTERVAL
+                            }
+                            return
+                        }
+                        // Within 15 tiles: fall through so the engage scan
+                        // formalizes the attack this tick.
+                    }
+
                     // Scan for nearby players — only attack those inside the wilderness
                     val nearbyPlayers = RegionManager.getLocalPlayers(bot, 15)
                     for (nearby in nearbyPlayers) {
@@ -647,10 +926,6 @@ class WildernessPKer(val aggressive: Boolean = true) : Script() {
                     return
                 }
                 trackFight(t)
-                if (fightTicks > FIGHT_GIVE_UP_TICKS) {
-                    disengageAndRetreat()
-                    return
-                }
 
                 // Verify combat range still valid
                 val wildyLevel = WildernessZone.getWilderness(bot)
@@ -698,10 +973,6 @@ class WildernessPKer(val aggressive: Boolean = true) : Script() {
                     return
                 }
                 trackFight(attacker)
-                if (fightTicks > FIGHT_GIVE_UP_TICKS) {
-                    disengageAndRetreat()
-                    return
-                }
                 activateProtectionPrayer(attacker)
                 activateOffensivePrayers()
                 bot.properties.combatPulse.attack(attacker)
@@ -787,32 +1058,33 @@ class WildernessPKer(val aggressive: Boolean = true) : Script() {
     }
 
     override fun newInstance(): Script {
-        val newScript = WildernessPKer(aggressive)
-        // Tier is rolled independently of aggression: 25% LOW / 40% MED / 35% HIGH
-        val assembler = CombatBotAssembler()
-        newScript.bot = assembler.produce(CombatBotAssembler.Type.MELEE, rollTier(), Location.create(3094, 3492, 0))!!
+        // Fresh build roll per respawn — the population mix sustains.
+        val build = PKBuild.random()
+        val newScript = WildernessPKer(aggressive, build)
+        newScript.bot = CombatBotAssembler().assemblePKBuild(build, Location.create(3094, 3492, 0))
         // Give the bot full food in inventory from the start
-        newScript.bot.inventory.add(Item(food, 12))
+        newScript.bot.inventory.add(Item(food, KIT_FOOD_COUNT))
         return newScript
     }
 
     init {
-        // Skills for prayers:
-        //  - PROTECT_FROM_MAGIC requires 37 prayer
-        //  - PROTECT_FROM_MISSILES requires 40 prayer
-        //  - PROTECT_FROM_MELEE requires 43 prayer
-        //  - ULTIMATE_STRENGTH requires 31 prayer
-        //  - INCREDIBLE_REFLEXES requires 34 prayer
-        //  - STEEL_SKIN requires 28 prayer
-        // We grant enough prayer level to use all of the above
-        skills[Skills.PRAYER] = 55  // High enough for all protect prayers
-        inventory.add(Item(food, 12))
+        // Prayer level comes from the PK build (pures 13-31, zerks 52, mains 70) —
+        // it gates which prayers the bot may authentically use (smite needs 52).
+        inventory.add(Item(food, KIT_FOOD_COUNT))
         // Mid-combat eating via the BotScriptPulse hook — HP is a model input,
         // so bots need to actually manage it during long fights. Eats are 85%
-        // reliable: perfect eaters are unkillable in even fights (observed:
-        // 100 minutes, zero PvP deaths, every fight a stalemate).
+        // reliable, the panic combo-eat only 55%, and shouldCombatEat skips
+        // heals entirely while pressing a KO: perfect eaters are unkillable in
+        // even fights (observed: 100 minutes, zero PvP deaths, every fight a
+        // stalemate).
         combatFoodId = food
         combatEatReliability = 85
+        comboEatReliability = 55
+        // PK technique kit: KO weapons (rune 2h always; the DDS special is gated
+        // at runtime on 60+ attack and 25% spec energy) and combo food.
+        inventory.add(Item(RUNE_2H, 1))
+        inventory.add(Item(DDS, 1))
+        inventory.add(Item(KARAMBWAN, 3))
         // ~35% wear a charged glory: the only way out of wilderness levels 21-30
         // (short of running), so deep escape capability varies across the
         // population like real PKer traffic.

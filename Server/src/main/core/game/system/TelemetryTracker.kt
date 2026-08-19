@@ -176,6 +176,61 @@ class TelemetryTracker {
             var lootValue: Long = 0L, var itemsDropped: Int = 0
         )
 
+        // ─── PK technique telemetry (decision making in fights) ────────────
+
+        data class BotTechniqueEvent(
+            val seq: Long, val tick: Int, val bot: String, val build: String,
+            val type: String, val detail: String
+        )
+
+        private const val MAX_TECHNIQUE_RECORDS = 100
+        private var techniqueSeq = 0L
+        private val techniqueTotals = LinkedHashMap<String, Long>()
+        private val techniqueByBuild = LinkedHashMap<String, LinkedHashMap<String, Long>>()
+        private val techniqueEvents = ArrayDeque<BotTechniqueEvent>()
+
+        /**
+         * Records a PK technique decision: per-bot event ring + global counters.
+         * Types used by WildernessPKer: SPEC, KO_SWAP, COMBO_EAT, SMITE, PI_FLICK,
+         * TAB_ESCAPE, GLORY_ESCAPE, FLED_FIGHT. Game thread only.
+         */
+        @JvmStatic
+        @JvmOverloads
+        fun onBotTechnique(player: Player, type: String, detail: String, build: String = "?") {
+            if (player !is AIPlayer) return
+            val tick = GameWorld.ticks
+            tracked[player.username.lowercase()]?.record(tick, type, detail)
+            techniqueTotals.merge(type, 1L, Long::plus)
+            techniqueByBuild.getOrPut(build) { LinkedHashMap() }.merge(type, 1L, Long::plus)
+            techniqueEvents.addLast(BotTechniqueEvent(techniqueSeq++, tick, player.username, build, type, detail))
+            while (techniqueEvents.size > MAX_TECHNIQUE_RECORDS) techniqueEvents.removeFirst()
+        }
+
+        /** Snapshot of technique usage as JSON for GET /api/server/techniques. Game thread only. */
+        @JvmStatic
+        @JvmOverloads
+        fun buildTechniqueStatsJson(maxRecent: Int = MAX_TECHNIQUE_RECORDS): JSONObject {
+            val recent = JSONArray()
+            for (event in techniqueEvents.takeLast(maxRecent)) {
+                recent.add(JSONObject().apply {
+                    this["tick"] = event.tick
+                    this["bot"] = event.bot
+                    this["build"] = event.build
+                    this["type"] = event.type
+                    this["detail"] = event.detail
+                })
+            }
+            val byBuild = JSONObject()
+            for ((build, totals) in techniqueByBuild) {
+                byBuild[build] = JSONObject(totals as Map<*, *>)
+            }
+            return JSONObject().apply {
+                this["totals"] = JSONObject(techniqueTotals as Map<*, *>)
+                this["by_build"] = byBuild
+                this["recent"] = recent
+            }
+        }
+
         private const val MAX_DEATH_RECORDS = 100
         private var totalBotDeaths = 0L
         private var totalLootValue = 0L
