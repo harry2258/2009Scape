@@ -1,0 +1,157 @@
+# Shortest Path Plugin — Implementation Plan
+
+## Overview
+
+A standalone plugin (separate from AdminPanel) that lets any player right-click the world map, choose **"Walk to"**, and see the shortest path highlighted as colored tile overlays in the 3D world. Inspired by [RuneLite's Shortest Path](https://github.com/Runemoro/shortest-path).
+
+---
+
+## Architecture
+
+```mermaid
+graph TD
+    A[World Map Right-Click] -->|OnMiniMenuCreate| B[Set Destination]
+    B --> C[A* Pathfinder]
+    C --> D[Path: List of WorldPoints]
+    D --> E[Tile Overlay Renderer]
+    D --> F[Minimap Path Line]
+    G[Collision Data Store] --> C
+    H[Transport Links] --> C
+```
+
+---
+
+## Phase 1: Tile Overlay Rendering (Foundation)
+
+**Goal**: Draw colored rectangles on game tiles using existing APIs.
+
+### How it works
+- `API.CalculateSceneGraphScreenPosition(tileX * 128, tileZ * 128, yOffset)` → screen `[x, y]`
+- Calculate all 4 corners of a tile to draw a filled polygon
+- Draw in [Draw](file:///c:/Users/diya0/IdeaProjects/rt4-client/plugin-playground/src/main/kotlin/KondoKit/plugin.kt#209-255) or `Draw3D` plugin hook each frame
+
+### Files
+- **[NEW] `ShortestPath/TileOverlay.kt`** — converts world coordinates → screen quads, draws via `API.FillRect`
+
+> [!NOTE]
+> The QuestHelper plugin already highlights tiles for quest steps — we can reference its approach.
+
+---
+
+## Phase 2: Local-Region Pathfinding
+
+**Goal**: A* pathfinding within the loaded 104×104 region using live `PathFinder.collisionMaps[plane].flags`.
+
+### How it works
+- Read `PathFinder.collisionMaps[Player.plane].flags` directly (public, always available)
+- Standard A* with collision flag checks (same bitmasks as `PathFinder.findPathN`)
+- Blocked flags: `0x12C0108` (west), `0x12C0102` (south), `0x12C0180` (east), `0x12C0120` (north), plus diagonals
+
+### Files
+- **[NEW] `ShortestPath/AStar.kt`** — A* implementation operating on `int[][]` collision flags
+- **[NEW] `ShortestPath/WorldPoint.kt`** — simple `data class WorldPoint(val x: Int, val z: Int, val plane: Int)`
+
+### Limitation
+Only works within ~50 tiles of the player. This phase is a stepping stone.
+
+---
+
+## Phase 3: Full-World Collision Data
+
+**Goal**: Extract collision flags for the entire game world from the cache so A* can path across regions.
+
+### Strategy: Runtime Region Scanning
+
+Rather than pre-extracting cache files (complex binary format), we use the client's own cache loading:
+
+1. **On each region load**, capture `PathFinder.collisionMaps[plane].flags` for all 4 planes
+2. **Store** in a persistent `HashMap<Long, Int>` keyed by [(worldX.toLong() shl 32) or worldZ.toLong()](file:///c:/Users/diya0/IdeaProjects/rt4-client/client/src/main/java/plugin/api/API.java#22-406)  
+3. **Save/load** to disk as a binary file (`~/.2009scape/collision_cache.dat`)
+4. **Over time**, the collision map fills in as the player explores
+
+### Alternative: Cache Extraction Tool
+
+A separate Gradle task that loads the game cache (`js5Archive5` map files), decodes collision flags for every region, and writes a packed binary file. This gives 100% coverage immediately but requires understanding the cache format.
+
+> [!IMPORTANT]
+> **Recommended approach**: Start with runtime scanning (Phase 3a). If coverage is insufficient, add cache extraction later (Phase 3b).
+
+### Files
+- **[NEW] `ShortestPath/CollisionStore.kt`** — persistent full-world collision data
+- **[NEW] `ShortestPath/RegionScanner.kt`** — captures collision flags on region load
+
+---
+
+## Phase 4: Transport Links (Optional Enhancement)
+
+**Goal**: Shortest path considers teleports, fairy rings, spirit trees, canoes, etc.
+
+### Data format
+```kotlin
+data class Transport(
+    val from: WorldPoint,
+    val to: WorldPoint,
+    val type: TransportType, // FAIRY_RING, SPIRIT_TREE, AGILITY_SHORTCUT, etc.
+    val requirement: String? // e.g., "Agility 70"
+)
+```
+
+### Stored in
+- **[NEW] `ShortestPath/transports.json`** — hand-curated list of transport links
+- A* treats each transport as a zero/low-cost edge between two disconnected graph nodes
+
+---
+
+## Phase 5: World Map & Minimap Integration
+
+**Goal**: Right-click world map → "Walk to" sets destination; minimap shows path line.
+
+### World Map (already partially implemented in AdminPanel)
+- [OnMiniMenuCreate](file:///c:/Users/diya0/IdeaProjects/rt4-client/client/src/main/java/plugin/Plugin.java#142-147): detect `WorldMap.component != null`
+- Calculate world coordinates using the proven formula
+- Insert "Set destination" and "Clear destination" menu entries
+
+### Minimap Path Line
+- Convert path points near the player to minimap-relative coordinates
+- Draw colored dots/lines on the minimap overlay
+
+---
+
+## Plugin Structure
+
+```
+plugin-playground/src/main/kotlin/ShortestPath/
+├── plugin.kt              # Plugin class, hooks, lifecycle
+├── plugin.properties      # name=ShortestPath, version=1.0
+├── AStar.kt               # A* pathfinding algorithm
+├── WorldPoint.kt          # Coordinate data class
+├── CollisionStore.kt      # Full-world collision data persistence
+├── RegionScanner.kt       # Captures collision flags at runtime
+├── TileOverlay.kt         # 3D tile highlighting
+├── MinimapOverlay.kt      # Minimap path drawing
+├── TransportLinks.kt      # Transport edge definitions
+└── transports.json        # Transport data file
+```
+
+---
+
+## Implementation Order
+
+| Phase | Scope | Effort |
+|-------|-------|--------|
+| 1 | Tile overlay rendering | Small — prove we can highlight tiles |
+| 2 | Local A* pathfinding | Medium — A* + collision flags |
+| 3a | Runtime collision scanning | Medium — capture on region load |
+| 5 | World map right-click integration | Small — reuse existing code |
+| 3b | Cache extraction (optional) | Large — binary cache decoding |
+| 4 | Transport links (optional) | Large — hand-curated data |
+
+Phases 1→2→3a→5 form the **MVP**. Phases 3b and 4 are enhancements.
+
+---
+
+## Key Technical Risks
+
+1. **Tile rendering performance** — drawing hundreds of tile overlays per frame could lag. Mitigation: only render tiles within the visible viewport (~30 tiles radius).
+2. **A* on large maps** — pathfinding across the entire world could be slow. Mitigation: limit search radius or use hierarchical pathfinding.
+3. **Collision data gaps** — runtime scanning only covers visited areas. Mitigation: encourage exploration or add cache extraction later.

@@ -1,0 +1,8 @@
+build/
+out/
+target/
+target/dumps/
+dist/
+.gradle/
+logs/
+data/cache/

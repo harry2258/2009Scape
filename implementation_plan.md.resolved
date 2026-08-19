@@ -1,0 +1,130 @@
+# Adventurer Bot Improvements
+
+Make bots feel more alive by adding inter-city walking routes, idle micro-behaviors, and time-of-day awareness, all within [Adventurer.kt](file:///c:/Users/diya0/IdeaProjects/2009scape/Server/src/main/content/global/bots/Adventurer.kt).
+
+## User Review Required
+
+> [!IMPORTANT]
+> **GE behavior question**: Currently bots only visit the GE when their `city` is set to one of the 4 GE clerk/banker locations. If a bot walks to `varrock` (the regular city point), it does **not** naturally walk to the GE. This plan adds a chance for bots in Varrock to walk over to the GE, is that what you want?
+
+> [!WARNING]
+> **Teleporting still exists as a fallback.** Routes won't cover every city pair, so bots will still teleport when no defined route exists. The goal here is to **reduce** teleporting, not eliminate it entirely.
+
+## Proposed Changes
+
+All changes are to a single file:
+
+### Adventurer Bot Core
+
+#### [MODIFY] [Adventurer.kt](file:///c:/Users/diya0/IdeaProjects/2009scape/Server/src/main/content/global/bots/Adventurer.kt)
+
+---
+
+**Feature 1: Waypoint Routes + `State.WALKING_PATH`**
+
+Add a `routes` map in the companion object defining walking paths between nearby cities. Each route is an `Array<Location>` of waypoints that [walkArray](file:///c:/Users/diya0/IdeaProjects/2009scape/Server/src/main/core/game/bots/ScriptAPI.kt#360-387) can follow.
+
+```kotlin
+// Example routes (will define ~8-10 key routes covering both city groups)
+val routes = mapOf(
+    Pair(varrock, lumbridge) to arrayOf(
+        Location(3233, 3395, 0), Location(3233, 3350, 0), 
+        Location(3233, 3300, 0), lumbridge
+    ),
+    Pair(falador, draynor) to arrayOf(
+        Location(2965, 3340, 0), Location(2990, 3280, 0), draynor
+    ),
+    Pair(varrock, edgeville) to arrayOf(
+        Location(3175, 3450, 0), Location(3130, 3475, 0), edgeville
+    ),
+    // ... more routes
+)
+```
+
+Add new `State.WALKING_PATH` enum value. In the `ADVENTURE` state, when the bot decides to change cities, it will first check for a defined route. If one exists, it uses [walkArray](file:///c:/Users/diya0/IdeaProjects/2009scape/Server/src/main/core/game/bots/ScriptAPI.kt#360-387) instead of teleporting. The walking state watches for arrival (within ~5 tiles of destination) and transitions to `ADVENTURE`.
+
+Add a `findRoute(from, to)` helper that checks `routes` for a matching pair in either direction (reversing the waypoint array if needed).
+
+---
+
+**Feature 2: Idle Micro-Behaviors**
+
+Add a new `performIdleBehavior()` function that randomly picks from:
+
+| Behavior | How | When |
+|---|---|---|
+| **Emote** | `Emotes.WAVE.play(bot)` / `THINK` / `DANCE` / `CHEER` | Near other players, ~15% chance |
+| **Examine scenery** | `bot.faceLocation(nearbyScenery.location)` + pause 3-5 ticks | While roaming, ~20% chance |
+| **Watch combat** | `bot.faceLocation(fightingEntity.location)` + idle 5-10 ticks | When nearby entity is in combat, ~30% chance |
+| **Random chat** | Existing [dialogue()](file:///c:/Users/diya0/IdeaProjects/2009scape/Server/src/main/content/global/bots/Adventurer.kt#527-574) function | Near players, ~10% chance |
+
+This function gets called from `ADVENTURE` and `IDLE_GE` states as an alternative to pure standing/walking.
+
+Emotes used will be the simple unlocked ones: `YES`, `NO`, `BOW`, `THINK`, `WAVE`, `SHRUG`, `CHEER`, `LAUGH`, `DANCE`, `CRY`, `CLAP`, `JUMP_FOR_JOY`.
+
+---
+
+**Feature 3: Time-of-Day Awareness**
+
+Add an `isNightTime()` function checking `LocalDateTime.now().hour`:
+- **Night** = 10 PM – 6 AM (hours 22, 23, 0-5)
+- **Day** = everything else
+
+During night hours:
+- Bots roam with **smaller** distances (60% of normal)
+- Bots are **less likely** to initiate combat ([immerse()](file:///c:/Users/diya0/IdeaProjects/2009scape/Server/src/main/content/global/bots/Adventurer.kt#157-184) combat chance halved)
+- Bots are **more likely** to idle at the GE or sit near banks
+- Bots **prefer** to stay in their current city rather than traveling
+
+---
+
+**Feature 4: Varrock → GE Natural Walking**
+
+In `State.ADVENTURE`, when `city == varrock`:
+- Add a ~15% per-tick chance to walk toward the GE instead of random roaming
+- Bot walks to one of the GE social locations using [walkTo](file:///c:/Users/diya0/IdeaProjects/2009scape/Server/src/main/core/game/bots/ScriptAPI.kt#349-359)
+- Once near the GE, set `city` to a random GE location and transition to normal GE behavior
+
+---
+
+**New State Enum:**
+
+```diff
+ enum class State {
+     START,
+     ADVENTURE,
++    WALKING_PATH,
+     FIND_BANK,
+     FIND_CITY,
+     IDLE_GE,
+     GE,
+     TELEPORTING,
+     LOOT,
+     LOOT_DELAY,
+     FIND_GE
+ }
+```
+
+## Verification Plan
+
+### Automated Tests
+- No automated unit tests exist for [Adventurer.kt](file:///c:/Users/diya0/IdeaProjects/2009scape/Server/src/main/content/global/bots/Adventurer.kt) in this project, and the bot behavior is inherently visual/observational. Compile check only:
+  ```
+  cd c:\Users\diya0\IdeaProjects\2009scape\Server
+  mvn compile -pl .
+  ```
+
+### Manual Verification
+Since bot behavior is observational, the best verification is in-game testing. After compiling:
+
+1. **Start the server** and log in with a test account
+2. **Spawn several adventurer bots** using the existing bot spawn commands
+3. **Observe** the following over ~5-10 minutes:
+   - Bots walk between cities instead of always teleporting
+   - Bots perform emotes near you (wave, think, dance, etc.)
+   - Bots face nearby scenery and pause briefly
+   - Bots in Varrock sometimes walk toward the GE
+4. **Test at night hours** (set system clock or wait) to see reduced roaming distances
+
+> [!TIP]
+> If you have a way to fast-forward server ticks or override the time check, that would make testing time-of-day behavior much faster. Otherwise you can temporarily hardcode `isNightTime()` to return `true` for testing.
