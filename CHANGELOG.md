@@ -4,6 +4,26 @@ All notable changes to the bot system are documented here. This file is the
 AI's long-term memory for the project — read it before making bot changes so
 past decisions and constraints are respected.
 
+### Added — hunt mode (telemetry-driven, per owner)
+- **Aggressive PKers now hunt instead of ambushing** (WildernessPKer
+  ROAMING): every 10 roaming ticks they sweep a 40-tile radius
+  (`getLocalPlayers(bot, HUNT_RADIUS)`) for the nearest valid target and
+  chase it (re-path every 5 ticks, give up after 150 ticks). Engagement is
+  still formalized by the existing 15-tile scan, so range/level checks apply
+  at the moment of attack; the chase itself re-validates worthiness every
+  tick and drops quarries that enter combat (no dogpiles). Quarry is cleared
+  on disengage so a fleeing bot doesn't instantly re-hunt its escapee.
+  Rationale: the 60-minute soak showed engagements collapsing to ~1/hour
+  once the entry-wave clustering diffused — a 15-tile opportunistic scan
+  over a ~450×435-tile wilderness with only 40 aggressive bots basically
+  never fires. New `HUNT` technique event (quarry name + distance) makes the
+  hunt→engage→kill pipeline observable in `/api/server/techniques`.
+  MIN_LOOT_VALUE note (owner question): it gates REAL players only —
+  `isWorthAttacking` exempts AIPlayers entirely (fake-economy bot gear
+  rarely cleared the 100k threshold, which had starved bot-vs-bot PvP).
+  Gear values come from the static GE_PRICE config on item definitions
+  (`checkPriceOverrides`), NOT a live GE market.
+
 ### Changed — fight sustainability tuning (per owner, telemetry-driven)
 - **Food kit halved: 12 → 6 per trip** (WildernessPKer `KIT_FOOD_COUNT`;
   kit spawn, newInstance, bank restock all reference it). Diagnosis from 45
