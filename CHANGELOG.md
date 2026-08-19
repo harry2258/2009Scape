@@ -4,6 +4,204 @@ All notable changes to the bot system are documented here. This file is the
 AI's long-term memory for the project — read it before making bot changes so
 past decisions and constraints are respected.
 
+## [Unreleased] — 2026-08-19 (naked targets skipped — corpse-runner farming fix)
+
+### Fixed
+- **isWorthAttacking now skips AIPlayers with empty equipment**
+  (WildernessPKer). The bot-target gear exemption (needed so fake-economy
+  gear never starves bot PvP) had a side effect: naked corpse-runners
+  reclaiming their loot were prime hunt targets — 14 of 31 PvP kills in a
+  1.5-hour window were zero-item kills farmed at the ditch landing (same
+  bots dying repeatedly at 3080-3088,3523). Gearlessness is publicly
+  visible and a naked target drops nothing, so hunters now pass; naked bots
+  still retaliate when attacked. Verified live 9 minutes after deploy:
+  zero-item kills 45% → 6%, median loot per kill 35 gp → 343k gp.
+
+## [Unreleased] — 2026-08-18 (low-food run-or-stay decision; kit rebalance)
+
+### Added
+- **Run-or-stay at low food** (`WildernessPKer.shouldBailFromFight`, wired
+  into both ATTACKING and RETALIATING): at ≤2 food the bot reads the fight
+  like a player deciding whether to ride the last sharks. It stays only when
+  ahead on HP (≥10%) OR ahead on combat level (≥3, the public signal), AND
+  the victim's HP is trending down over an 8-tick sample window (they're
+  running dry too — new victimHpTrend tracker in combatTick, reset per fight
+  via trackFight). Otherwise it disengages (FLED_FIGHT). Survival override:
+  critical HP with zero food always runs; a 10-tick minimum commitment
+  prevents insta-flees before the trend read exists (observed: "after 2
+  ticks @ 87hp"). New STAY_GAMBLE telemetry event fires once per fight when
+  the bot commits to the gamble (food left, victim trend, both edges).
+
+### Changed
+- **comboEatReliability 55 → 85** — the 55% experiment belonged to the
+  stalemate era; the real blocker (isAttackable's level-49 gates) is gone,
+  so the panic combo-eat is trustworthy again.
+- **Food kit 6 → 8** (`KIT_FOOD_COUNT`) — tight enough that food economics
+  decide fights, generous enough that a losing bot has a window to read the
+  fight and choose to run.
+
+## [Unreleased] — 2026-08-18 (PvP swings never executed — root cause of zero PvP kills)
+
+### Fixed
+- **Player.isAttackable still carried the level-49 gates** that
+  continueAttack had already lost. `hasWildernessProtection()` is hardcoded
+  `level < 49` in SkullManager, so at ANY wilderness level below 49 the
+  isAttackable check failed — and CombatPulse.pulse() treats that as
+  "stop the pulse": every sub-49 fight closed to melee range, stood
+  adjacent, and silently died on its first swing attempt. This also
+  retroactively explains the earlier "knife-edge" fights (victims at 5-7%
+  were being drained by NPCs while their PvP attacker stood by, weapon
+  swapped, never swinging). PvP now allowed at all wilderness levels in
+  BOTH gates (owner's earlier decision). Verified live: 13 bot kills with
+  1.95M gp loot in the first 5 minutes after the fix; VICTIM_HP telemetry
+  went 0 → 500+ samples, KO_SWAP 0 → 70+.
+- **KO-mode re-entry cooldown (15 ticks)** (WildernessPKer) — with a healthy
+  victim the opening-spec entry and the >45% exit flapped every 2 ticks,
+  toggling the special bar until energy burned (observed: 7 toggles in 14
+  ticks). The true low-HP window (≤35%) bypasses the cooldown.
+- **Run is state-conditional** (WildernessPKer) — hunters/fighters/fleers
+  run, plain roamers walk. Universal running made predator and prey equally
+  fast so chases still never closed; the speed asymmetry (2 vs 1 tiles/tick)
+  is what lets pursuit reach melee range.
+
+## [Unreleased] — 2026-08-18 (LLM guidance service for settler bots — ops + contract, no game code)
+
+### Added
+- **Local LLM endpoint for settler guidance** (`Tools/llm-guidance/`, branch
+  `feat/llm-guidance-service`): llama.cpp `llama-server` (release b10488,
+  CUDA 12.4 build + cudart runtime) serving Qwen2.5-7B-Instruct Q4_K_M on
+  `127.0.0.1:8090`, 16 slots × 3 072 tok ctx, KV q8_0 (`-ctk/-ctv`), flash
+  attention on. Footprint ~6 GB VRAM of the RTX 4090 — sized deliberately so
+  ~17 GB stays free for gaming (owner plays on the same GPU); GPU compute is
+  consumed only during generations and `stop-llm.ps1` frees everything.
+  Scripts: `bootstrap.ps1` (idempotent GitHub/HF download, GGUF magic + size
+  verification, picks `llama-*-bin-win-cuda-12.4-x64.zip` + matching
+  `cudart-*` companion), `start-llm.ps1` (health-gated launch, pid file,
+  BelowNormal priority), `stop-llm.ps1`, `smoke-test.ps1` (health +
+  schema-constrained guidance request validation), `bench-settlers.py`
+  (stdlib-only load harness: 200-bot reboot-restore burst + steady
+  decision-point cadence, p50/p95/p99). Binaries/models gitignored.
+- **Integration contract v1** (`docs/llm-guidance-contract.md`): advisory-only
+  role — `BotGoalEngine` stays the authoritative pure-function planner (design
+  doc D7 preserved); the LLM may only endorse/adjust among planner-computed
+  candidates via a per-request enum whitelist generated from BotWiki data, so
+  it mechanically cannot invent methods/locations/items. Two-way memory is a
+  deterministic digest of SettlerHistory (persona, current+previous goal,
+  last 5 decision events *including the LLM's own past advice*, ~400-token
+  budget, prune order specified) — no LLM-side summarization calls, no
+  server-side conversation state, reboots cannot desync memory. Resilience:
+  ≥60 s per bot, ≤16 in flight, 5 s timeout, circuit breaker (5 fails → open
+  60 s), restore stagger; any failure → deterministic planner default, zero
+  gameplay impact. Future hooks defined for the Settler PR: `GUIDANCE`
+  history event (`reason` doubles as aliveness chat source),
+  `onSettlerGuidance` telemetry, `guidance_*` config keys (default off).
+  Settler design doc gains §8 pointing at the contract.
+- Rationale: the service and contract are independently testable today and
+  lock the prompt/schema design before `BotGoalEngine` exists, avoiding
+  retrofit churn; keeping the LLM off the critical path means gameplay
+  survives LLM downtime and gaming VRAM contention by construction.
+
+### Verification
+- `bootstrap.ps1`: llama-server.exe + ggml DLLs + cudart runtime extracted;
+  model 4.36 GB with GGUF magic verified.
+- `smoke-test.ps1`: health 113 ms; schema-constrained reply valid
+  (`choice=mine_coal_rimmington`, confidence 0.85, latency 732 ms,
+  556-tok prompt / 52-tok completion) — and memory-consistent: it avoided
+  Al Kharid because the digest showed a scorpion death there.
+- `bench-settlers.py` full run (200-bot burst over 60 s + 2 req/s × 300 s):
+  results recorded in `cursor_log.md`.
+- `nvidia-smi` while serving: ~6 GB VRAM (9 406 MiB total system use vs
+  3 359 MiB pre-launch baseline).
+
+### Changed — contract v1.1: subgoal-planning loop (per owner direction)
+- The LLM's role upgraded from method-picker to two-level arc planner
+  (`docs/llm-guidance-contract.md` v1.1). **SUBGOAL_PLANNING** consult: when a
+  bot sets a goal — and again whenever a subgoal batch completes —
+  `BotGoalEngine` computes all valid next subgoals (quests/levels/items) and
+  the LLM chooses and orders 3–5 into an arc; batch completion triggers the
+  next consult, exactly the loop the owner described. **METHOD_GUIDANCE**
+  (v1 behavior) continues underneath for method+location decisions. New
+  pieces: subgoal ledger in the memory digest (completed subgoals + previous
+  arc summary — the LLM sees which of its plans came true), merge semantics
+  (batches append; in-flight subgoals persist; backlog cap ~5), planner
+  enforcement of the quest prereq DAG over LLM ordering, per-type budgets
+  (max_tokens 350, timeout 20 s for subgoal consults vs 200/5 s for method).
+  Goal selection itself stays deterministic per D8 — the LLM decomposes the
+  dream, it doesn't pick it.
+- Live validation (Qwen2.5-7B Q4_K_M, two chained Dragon Slayer consults):
+  both replies structurally valid, enum-respecting, no ledger repeats; beat 1
+  queued `quest:the_knights_sword` first for its 12,725 Smithing-XP reward
+  against the Smithing 34 requirement (synergy-aware); beat 2 continued the
+  quest-rewards-first strategy with Vampyre/Prince Ali QP + crafting + shield.
+  Measured 5.8–7.0 s per subgoal consult — drove the 20 s timeout decision.
+
+### Added — contract v1.2: Server Almanac grounding (per owner question)
+- Owner asked whether the model knows this is a 2009 RS2 server (not OSRS)
+  and whether it can reference a knowledge graph of server content. Probe
+  answered the first part: **no** — with era framing alone the model scored
+  0/3 on era facts (said "Constitution", claimed Zeah/Wintertodt exist,
+  invented a "Mining Pyres" money-maker); with an almanac block prepended,
+  3/3 strictly grounded. The enum whitelist already protected choices; free
+  text (`reason`/`why`/`summary`, future aliveness chat) was exposed.
+- New `docs/llm-guidance-almanac.md`: the versioned grounding block
+  (era facts, notation, forbidden-content list, owner-curated server-customs
+  section), curation rules (single source, ~400-token budget, version bump +
+  probe re-run on every change), open items for the owner (Summoning?
+  members content? custom-content bullets from repo history), and the
+  validation probe. Contract v1.2 makes the block mandatory in every system
+  prompt (static prefix, cache-friendly) and records `almanac_version` in
+  GUIDANCE events.
+- Knowledge-graph architecture decision: the server itself (BotWiki +
+  QuestRepository + item defs) stays the knowledge base; the planner-filtered
+  candidate whitelist is the per-request retrieval interface. A separate
+  graph DB with tool-calling was rejected for now — it multiplies latency
+  3-5x per consult and duplicates the source of truth; revisit only if
+  free-form Q&A guidance is ever wanted (llama.cpp supports tools).
+
+### Changed — almanac v2: full-game scope (owner facts)
+- Owner confirmed: Summoning and Hunter exist on the server, and members
+  content is the complete 2009 set. Almanac v1 had assumed F2P-only scope —
+  corrected in `docs/llm-guidance-almanac.md` v2: era line now "full game:
+  F2P AND members", members skill list added (incl. Hunter 2006+, Summoning
+  2008+), notation flipped to "assume members unless [State] says F2P".
+  Open items reduced to: settler membership question (Settler PR), custom
+  content bullets, quest pool. New open question for the Settler PR: do
+  settlers have membership? It drives whether planners default to members
+  methods.
+- `smoke-test.ps1` + `bench-settlers.py` system prompts brought into
+  contract-v1.2 lockstep (almanac block mandatory). Validation: probe 4/4
+  (Summoning yes, Hunter yes, members-2009 yes, Zeah/Wintertodt no); smoke
+  test PASS (861-tok prompt, 579 ms); burst re-bench PASS (200/200, p95
+  2.65 s vs 2.46 s pre-almanac — within target).
+
+### Rollback
+- Run `Tools/llm-guidance/stop-llm.ps1`, then delete `Tools/llm-guidance/`
+  and `docs/llm-guidance-contract.md`, and revert the settler design-doc §8
+  and `.gitignore` additions. No game code, config, or schema depends on any
+  of it; nothing to restore server-side.
+
+### Fixed — post-fight ditch wedge + KO churn (per owner: "30 min, no PvP deaths")
+- **ROAMING south of the ditch now hands off to TO_WILD** (WildernessPKer).
+  Diagnosis from per-bot event histories: when a retaliator fled a losing
+  fight south across the ditch, the attacker chased and lost the target at
+  the zone border — leaving BOTH in ROAMING on the south lip, where
+  free-exploration steps target north-side tiles the pathfinder can't route
+  across the ditch. Both fighters of one skirmish paced the ditch ~27
+  minutes (visible as lateral TELEPORT-heuristic walks along y=3520). TO_WILD
+  owns crossing; the handoff re-enters them cleanly. Note: TELEPORT events
+  with ~16-24 tile jumps along the ditch are mostly walk segments logged
+  between MovementPulse pauses (script pulse paused while walking) — a
+  telemetry artifact, not engine relocations.
+- **RETALIATING's food retreat now routes through disengageAndRetreat** —
+  the old inline retreat (beingAttackedBy=null + stop + RETREATING) was
+  invisible to telemetry: FLED_FIGHT read zero while retreats happened
+  every fight. Aggressor and retaliator flees are now both counted.
+- **KO mode latches while the window is open** — the 8-tick time box
+  churned weapon swaps every re-entry (five KO_SWAPs in one observed fight)
+  while victims sat at 5-7% and ate back to 40%+. Exit is now victim-HP
+  driven with hysteresis: leave KO mode when the victim heals above 45%
+  (entry at ≤35%).
+
 ### Added — hunt mode (telemetry-driven, per owner)
 - **Aggressive PKers now hunt instead of ambushing** (WildernessPKer
   ROAMING): every 10 roaming ticks they sweep a 40-tile radius

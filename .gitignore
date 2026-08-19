@@ -68,3 +68,9 @@ Server/data/ge/
 Server/data/cache_backup/
 Server/data/players_backup_*/
 telemetry_soak.jsonl
+
+# LLM guidance service (llama.cpp binaries + GGUF models are large downloads)
+Tools/llm-guidance/
+
+# Local docs scratch (llm-guidance contract/almanac)
+docs/

@@ -782,13 +782,11 @@ public class Player extends Entity {
 		if (entity instanceof Player) {
 			Player p = (Player) entity;
 			if (p.getSkullManager().isWilderness() && skullManager.isWilderness()) {
-				if (!GameWorld.getSettings().getWild_pvp_enabled())
-					return false;
-				if (p.getSkullManager().hasWildernessProtection())
-					return false;
-				if (skullManager.hasWildernessProtection())
-					return false;
-				return true;
+				// PvP at all wilderness levels (owner decision) — the old
+				// hasWildernessProtection() (level < 49) gates here silently
+				// STOPPED the attacker's CombatPulse on its first swing attempt,
+				// so sub-49 "fights" stood adjacent dealing zero damage forever.
+				return GameWorld.getSettings() != null && GameWorld.getSettings().getWild_pvp_enabled();
 			} else return false;
 		}
 		return super.isAttackable(entity, style, message);

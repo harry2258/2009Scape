@@ -102,13 +102,13 @@ class WildernessPKer(val aggressive: Boolean = true, val build: PKBuild = PKBuil
         private const val KARAMBWAN = 3144   // combo food: same-tick eat with normal food
 
         /**
-         * Food carried per trip (kit spawn + bank restock target). 6, down from
-         * 12: with a full 12-kit and clock-gated eating, both fighters simply
-         * out-healed each other's DPS forever (observed: victims pinned at
-         * 45-65% HP, fights never reaching a KO). Half the sustain means
-         * someone's food runs out — and then they die or flee.
+         * Food carried per trip (kit spawn + bank restock target). 8, down
+         * from 12: the original 12-kit let both fighters out-heal each other's
+         * DPS forever (victims pinned at 45-65% HP, no KO windows). Tight
+         * enough that food economics decide fights, generous enough that a
+         * losing bot still has a window to read the fight and run.
          */
-        private const val KIT_FOOD_COUNT = 6
+        private const val KIT_FOOD_COUNT = 8
 
         val trashTalkLines = arrayOf(
             "Sit.", "Gf.", "Easy.", "L0l.", "Bank was made.",
@@ -151,6 +151,13 @@ class WildernessPKer(val aggressive: Boolean = true, val build: PKBuild = PKBuil
     private var currentFoe: Player? = null
     private var fightTicks = 0
 
+    // Victim HP trajectory, sampled every 8 ticks — how a real PKer "reads"
+    // whether the opponent is running dry (their HP stops bouncing back).
+    private var victimHpTrend = 0
+    private var lastVictimHpSample = -1
+    private var victimHpSampleCooldown = 0
+    private var gambleLogged = false
+
     /**
      * Counts fight duration per foe. Evenly-matched bots that eat reliably
      * cannot kill each other, so past FIGHT_GIVE_UP_TICKS a bot judges the
@@ -160,6 +167,10 @@ class WildernessPKer(val aggressive: Boolean = true, val build: PKBuild = PKBuil
         if (foe !== currentFoe) {
             currentFoe = foe
             fightTicks = 0
+            victimHpTrend = 0
+            lastVictimHpSample = -1
+            victimHpSampleCooldown = 0
+            gambleLogged = false
         }
         fightTicks++
     }
@@ -174,10 +185,45 @@ class WildernessPKer(val aggressive: Boolean = true, val build: PKBuild = PKBuil
         state = State.RETREATING
     }
 
+    /**
+     * Low-food run-or-stay (owner-requested). With ~2 food left, the bot
+     * reads the fight like a player deciding whether to ride the last sharks:
+     * stay only when the evidence says the race is winnable — we're ahead on
+     * HP, ahead on combat level (the public signal everyone checks), AND the
+     * victim's HP is trending down (they're running dry too). Otherwise run.
+     * Critical HP with nothing left to eat is not a gamble — survival runs.
+     */
+    private fun shouldBailFromFight(victim: Player?): Boolean {
+        val foodLeft = bot.inventory.getAmount(food)
+        if (foodLeft > 2) return false
+        val maxLp = bot.skills.maximumLifepoints.coerceAtLeast(1)
+        val myRatio = bot.skills.lifepoints.toDouble() / maxLp
+        if (myRatio < 0.30 && foodLeft == 0) return true
+
+        // Commit for at least a sampling window before acting on the read —
+        // entering a fight low on food with no trend data yet caused instant
+        // 2-tick flees at full health (observed: "after 2 ticks @ 87hp").
+        if (fightTicks < 10) return false
+
+        val v = victim ?: return true // can't read the fight: cautious out
+        val vRatio = v.skills.lifepoints.toDouble() /
+                v.skills.maximumLifepoints.coerceAtLeast(1)
+        val hpEdge = myRatio - vRatio
+        val levelEdge = bot.properties.currentCombatLevel - v.properties.currentCombatLevel
+        val believeCanWin = (hpEdge >= 0.10 || levelEdge >= 3) && victimHpTrend < 0
+        if (believeCanWin && !gambleLogged) {
+            gambleLogged = true
+            TelemetryTracker.onBotTechnique(bot, "STAY_GAMBLE",
+                "${foodLeft} food, victim ${victimHpTrend}hp/8t, hp+${(hpEdge * 100).toInt()}%, lvl$levelEdge",
+                build.name)
+        }
+        return !believeCanWin
+    }
+
     // ─── PK techniques (run from combatTick — tick() is paused in combat) ────
 
     private var koMode = false
-    private var koTicks = 0
+    private var koReentryCooldown = 0
     private var mainWeaponId = -1
     private var smiteOn = false
     private var piFlickCooldown = 0
@@ -216,6 +262,19 @@ class WildernessPKer(val aggressive: Boolean = true, val build: PKBuild = PKBuil
             val vMax = victim.skills.maximumLifepoints.coerceAtLeast(1)
             val vHpRatio = victim.skills.lifepoints.toDouble() / vMax
 
+            // Read the victim like a player would: sample their HP every 8
+            // ticks — a negative trend means their heals aren't keeping pace
+            // (running dry). Feeds the low-food run-or-stay decision.
+            if (victimHpSampleCooldown > 0) {
+                victimHpSampleCooldown--
+            } else {
+                if (lastVictimHpSample >= 0) {
+                    victimHpTrend = victim.skills.lifepoints - lastVictimHpSample
+                }
+                lastVictimHpSample = victim.skills.lifepoints
+                victimHpSampleCooldown = 8
+            }
+
             // Diagnostic: sample near-window victim HP so fight trajectories are
             // observable in the technique telemetry.
             if (hpSampleCooldown > 0) hpSampleCooldown-- else if (vHpRatio < 0.60) {
@@ -224,18 +283,29 @@ class WildernessPKer(val aggressive: Boolean = true, val build: PKBuild = PKBuil
             }
 
             // KO time: swap to the heavy weapon — DDS special if we can, rune 2h otherwise.
-            // 35% not 30%: combo eating snaps victims back +38hp instantly, so the
-            // window is a single tick wide — the extra margin catches more of them.
+            // The mode LATCHES while the window is open: a fixed timer exit churned
+            // weapon swaps every 8 ticks while the victim stayed critical
+            // (telemetry: five KO_SWAPs in one fight, victims at 5-7% still eating
+            // back to 40%+). Exit only when the victim heals clear of the window
+            // (45% — hysteresis above the 35% entry) or the fight ends.
+            // Re-entry cooldown: with a healthy victim the opening-spec entry and
+            // the >45% exit flap every 2 ticks, toggling the special bar on/off
+            // until the energy bar is gone (observed: 7 toggles in 14 ticks).
             // Fights also OPEN with the DDS special when available (classic NH
             // opener): bot-vs-bot DPS is low enough that victims rarely reach the
-            // window otherwise (telemetry: one sub-60% victim sample in 6 minutes).
+            // window otherwise.
             if (koMode) {
-                if (++koTicks > 8) exitKoMode() // time-boxed: back to the main weapon after the burst
-            } else if (vHpRatio <= 0.35 || (fightTicks < 3 && bot.inventory.contains(DDS, 1)
+                if (vHpRatio > 0.45) {
+                    exitKoMode()
+                    koReentryCooldown = 15
+                }
+            } else if (vHpRatio <= 0.35 || (fightTicks < 3 && koReentryCooldown == 0
+                        && bot.inventory.contains(DDS, 1)
                         && bot.skills.getStaticLevel(Skills.ATTACK) >= 60
                         && bot.settings.getSpecialEnergy() >= 25)) {
                 enterKoMode(vHpRatio)
             }
+            if (koReentryCooldown > 0) koReentryCooldown--
 
             // Smite: burn the victim's last prayer so Protect Item (and everything
             // else) drops — drain itself is engine-side.
@@ -321,7 +391,6 @@ class WildernessPKer(val aggressive: Boolean = true, val build: PKBuild = PKBuil
         bot.inventory.remove(Item(koWeapon, 1))
         bot.equipment.replace(Item(koWeapon, 1), 3)
         koMode = true
-        koTicks = 0
         if (canSpec) {
             // setSpecialToggled ignores its argument (toggle-only) — only call when off.
             if (!bot.settings.isSpecialToggled) {
@@ -528,6 +597,12 @@ class WildernessPKer(val aggressive: Boolean = true, val build: PKBuild = PKBuil
         // a fake economy and rarely clears the threshold, which starved
         // bot-on-bot PvP entirely; bots are fair game regardless of gear value.
         if (t !is AIPlayer && targetGearValue(t) < MIN_LOOT_VALUE) return false
+        // ...but naked bots are skipped: gearlessness is publicly visible, and
+        // a no-gear target has nothing to drop. Mostly corpse-runners
+        // reclaiming their loot — 14 of 31 recent kills were zero-item naked
+        // bots farmed at the ditch landing. They still retaliate when hit;
+        // hunters just don't chase them.
+        if (t is AIPlayer && t.equipment.toArray().filterNotNull().isEmpty()) return false
         // Bot must have enough HP to risk a fight
         val hpFraction = bot.skills.lifepoints.toDouble() / bot.skills.maximumLifepoints
         if (hpFraction < 0.65) return false
@@ -687,6 +762,14 @@ class WildernessPKer(val aggressive: Boolean = true, val build: PKBuild = PKBuil
 
         checkEat()
 
+        // Run only when it matters (hunting, fighting, fleeing) and walk while
+        // roaming — pursuit speed must EXCEED prey speed or a chase never
+        // closes: with everyone running, hunters trailed prey at equal speed
+        // and ~150 opened fights landed almost no damage at all.
+        val running = quarry != null || state == State.ATTACKING ||
+                state == State.RETALIATING || state == State.RETREATING
+        bot.settings.isRunToggled = running && bot.settings.runEnergy > 10.0
+
         // Fight just ended (state left the combat states)? Undo fight gear.
         if (state != State.ATTACKING && state != State.RETALIATING && (koMode || smiteOn)) {
             endFightCleanup()
@@ -823,6 +906,17 @@ class WildernessPKer(val aggressive: Boolean = true, val build: PKBuild = PKBuil
             }
 
             State.ROAMING -> {
+                // South of the ditch in ROAMING (e.g. chased a fleeing target
+                // across and lost it at the zone border): free-exploration
+                // steps target north-side tiles the pathfinder can't route
+                // across the ditch, so the bot paces the southern lip
+                // indefinitely (observed: both fighters of one skirmish
+                // wedged there ~27 minutes). TO_WILD owns ditch crossing —
+                // hand off to it and re-enter properly.
+                if (bot.location.y <= 3521) {
+                    state = State.TO_WILD
+                    return
+                }
                 // Update wilderness level as we move
                 bot.skullManager.setLevel(WildernessZone.getWilderness(bot))
 
@@ -940,14 +1034,10 @@ class WildernessPKer(val aggressive: Boolean = true, val build: PKBuild = PKBuil
                 activateProtectionPrayer(t)
                 sendTrashTalk()
 
-                // Out of food or critically hurt: disengage and get out rather than
-                // standing there dying.
-                val hpFraction = bot.skills.lifepoints.toDouble() / bot.skills.maximumLifepoints
-                if ((bot.inventory.getAmount(food) < 2 && !hasFood()) || (hpFraction < 0.30 && !hasFood())) {
-                    target = null
-                    bot.properties.combatPulse.stop()
-                    invalidateCarriedValue()
-                    state = State.RETREATING
+                // Low food: run-or-stay — ride the last sharks only when the
+                // read says the race is winnable (see shouldBailFromFight).
+                if (shouldBailFromFight(t)) {
+                    disengageAndRetreat()
                     return
                 }
                 // If inventory completely full with no food, bank the loot
@@ -977,12 +1067,11 @@ class WildernessPKer(val aggressive: Boolean = true, val build: PKBuild = PKBuil
                 activateOffensivePrayers()
                 bot.properties.combatPulse.attack(attacker)
                 sendTrashTalk()
-                val hpFraction = bot.skills.lifepoints.toDouble() / bot.skills.maximumLifepoints
-                if (bot.inventory.getAmount(food) < 2 || (hpFraction < 0.30 && !hasFood())) {
-                    beingAttackedBy = null
-                    bot.properties.combatPulse.stop()
-                    invalidateCarriedValue()
-                    state = State.RETREATING
+                // Low food: same run-or-stay read as the aggressor (victim HP
+                // trend + edges); flees log FLED_FIGHT via disengageAndRetreat.
+                if (shouldBailFromFight(attacker)) {
+                    disengageAndRetreat()
+                    return
                 }
             }
 
@@ -1073,13 +1162,13 @@ class WildernessPKer(val aggressive: Boolean = true, val build: PKBuild = PKBuil
         inventory.add(Item(food, KIT_FOOD_COUNT))
         // Mid-combat eating via the BotScriptPulse hook — HP is a model input,
         // so bots need to actually manage it during long fights. Eats are 85%
-        // reliable, the panic combo-eat only 55%, and shouldCombatEat skips
-        // heals entirely while pressing a KO: perfect eaters are unkillable in
-        // even fights (observed: 100 minutes, zero PvP deaths, every fight a
-        // stalemate).
+        // reliable, and shouldCombatEat skips heals entirely while pressing a
+        // KO. (The 55% combo-eat experiment of the stalemate era was reverted
+        // to 85% once the real blocker — isAttackable's level-49 gates — was
+        // found and removed.)
         combatFoodId = food
         combatEatReliability = 85
-        comboEatReliability = 55
+        comboEatReliability = 85
         // PK technique kit: KO weapons (rune 2h always; the DDS special is gated
         // at runtime on 60+ attack and 25% spec energy) and combo food.
         inventory.add(Item(RUNE_2H, 1))
